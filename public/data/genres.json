@@ -1,0 +1,182 @@
+[
+  {
+    "id": "d106a45f-b8cb-41e3-99d8-ab48c7459170",
+    "name": "pop",
+    "display_name": "Pop",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "79057b43-830f-4528-8100-3d8e6c7fd221",
+    "name": "rock",
+    "display_name": "Rock",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "fdc10117-60a2-4505-934c-372916051327",
+    "name": "metal",
+    "display_name": "Metal",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "64bea277-28ec-49ba-8fe7-97e832f6b7cd",
+    "name": "hip-hop",
+    "display_name": "Hip-Hop",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "d4ae0308-a3e8-4530-bc23-2e86eb06430b",
+    "name": "r&b",
+    "display_name": "R&B",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "3cd59edc-9708-42fe-b67a-fe83a8060dd5",
+    "name": "electronic",
+    "display_name": "Eletrônica",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "16a9f2b5-a3ef-42a6-aba0-b6420434be1d",
+    "name": "jazz",
+    "display_name": "Jazz",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "919816a3-df09-4820-8ee2-0c18f8db9167",
+    "name": "blues",
+    "display_name": "Blues",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "9bfd8bcc-dff9-481a-abb3-ab3b7f44ba0f",
+    "name": "classical",
+    "display_name": "Clássica",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "b44b12a7-1fb7-4478-8ce8-46cd1f907399",
+    "name": "reggae",
+    "display_name": "Reggae",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "e1448406-9a63-4b5f-9a33-3194ae816ee8",
+    "name": "reggaeton",
+    "display_name": "Reggaeton",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "b4a405f4-f438-4ee4-95c3-1612c11c1f15",
+    "name": "gospel",
+    "display_name": "Gospel",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "c4568a5a-6fe2-4b42-a071-43c4fb3902fb",
+    "name": "sertanejo",
+    "display_name": "Sertanejo",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "a9f9cedc-dc8c-436a-9e75-b3ef1c2cd2f1",
+    "name": "mpb",
+    "display_name": "MPB",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "25388c3e-a9b8-4379-8261-d21effec0b9a",
+    "name": "samba",
+    "display_name": "Samba",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "9a66610a-d70b-4a67-8d18-db4468053829",
+    "name": "pagode",
+    "display_name": "Pagode",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "d39e3bce-5918-4dae-adc5-42345469e32d",
+    "name": "funk",
+    "display_name": "Funk",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "ebaba962-06e7-46eb-b95a-0dfb514503fb",
+    "name": "forró",
+    "display_name": "Forró",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "ef8e2656-ecb5-4b5e-98b6-7e9ce7517c30",
+    "name": "lo-fi",
+    "display_name": "Lo-Fi",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "cdf52035-219d-44b4-9e65-06c00d0bcf3d",
+    "name": "k-pop",
+    "display_name": "K-Pop",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "6a8ab040-9faa-4991-8a9b-95743c1efded",
+    "name": "afrobeats",
+    "display_name": "Afrobeats",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "a877c8fa-b7a9-406c-9729-e519264b18f7",
+    "name": "indie",
+    "display_name": "Indie",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "daf61892-78ea-4787-9fd1-4eacad6d15ea",
+    "name": "trap",
+    "display_name": "Trap",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "55d86e0c-459e-4845-b3fd-346b846e3e02",
+    "name": "house",
+    "display_name": "House",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "f8a0a193-fed6-4f25-a535-19b411a44585",
+    "name": "techno",
+    "display_name": "Techno",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "9ad7a681-b43f-49fc-a69d-7d77fd357a87",
+    "name": "ambient",
+    "display_name": "Ambient",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "5eb0120c-f216-4cbf-a607-cd5bfe296f3b",
+    "name": "dance",
+    "display_name": "Dance",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "fe7a48f6-0c67-4de0-83c4-6aeb41160525",
+    "name": "punk",
+    "display_name": "Punk",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "8c5aea33-52db-495c-af1d-68861969d7cf",
+    "name": "soul",
+    "display_name": "Soul",
+    "created_at": "2026-03-24T10:15:24.565913+00:00"
+  },
+  {
+    "id": "97cc7243-f8a6-4b97-bb0d-3968bcc0c2c5",
+    "name": "country",
+    "display_name": "Country",
+    "created_at": "2026-03-27T23:53:26.924184+00:00"
+  }
+]
