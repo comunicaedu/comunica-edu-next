@@ -1675,19 +1675,39 @@ function PlayerPageContent() {
   useEffect(() => {
     const id = window.setInterval(() => {
       if (manuallyPausedRef.current || !currentSongRef.current) return;
+
       if (isYouTubeModeRef.current) {
         ytPlayer.play();
       } else {
         const audio = audioRef.current;
-        if (audio && audio.paused && !audio.ended && audio.src) {
-          audio.play().catch(() => undefined);
-          forceLocalNormalizerSync();
+        if (audio && audio.src) {
+          // Detecta fim de música via polling — o evento onEnded não dispara
+          // de forma confiável em abas em background no Chrome.
+          if (audio.ended) {
+            goNextInQueueRef.current?.();
+            return;
+          }
+          // Detecta quando currentTime parou perto do fim (margem de 0.5s)
+          if (
+            !audio.paused &&
+            audio.duration > 0 &&
+            !isNaN(audio.duration) &&
+            audio.currentTime > 0 &&
+            audio.duration - audio.currentTime < 0.5
+          ) {
+            goNextInQueueRef.current?.();
+            return;
+          }
+          // Reinicia se pausou sem ser intencional
+          if (audio.paused && !audio.ended) {
+            audio.play().catch(() => undefined);
+            forceLocalNormalizerSync();
+          }
         }
       }
+
       if ("mediaSession" in navigator) {
         navigator.mediaSession.playbackState = "playing";
-        // iOS Safari: setPositionState periódico mantém o player visível na lock screen
-        // e impede que o iOS considere o player "morto" e suspenda o áudio
         const msAudio = audioRef.current;
         if (!isYouTubeModeRef.current && msAudio && msAudio.duration && !isNaN(msAudio.duration)) {
           try {
