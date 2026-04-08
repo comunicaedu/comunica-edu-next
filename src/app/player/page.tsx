@@ -2208,7 +2208,7 @@ function PlayerPageContent() {
                     <input type="range" min={32} max={120} value={avatarConfig.size} title="Tamanho do avatar" onChange={(e) => setAvatarConfig((c) => ({ ...c, size: Number(e.target.value) }))} className="accent-primary" />
                     <p className="text-muted-foreground">X: {Math.round(avatarConfig.x)}  Y: {Math.round(avatarConfig.y)}</p>
                     <button type="button" className="mt-1 bg-primary text-primary-foreground rounded-lg px-3 py-1 font-medium"
-                      onClick={() => { localStorage.setItem("avatar-position-config", JSON.stringify(avatarConfig)); setAvatarEditMode(false); toast.success("Posição salva!"); }}
+                      onClick={() => { localStorage.setItem("avatar-position-config", JSON.stringify(avatarConfig)); setAvatarEditMode(false); }}
                     >OK — Salvar posição</button>
                     <button type="button" className="text-muted-foreground hover:text-foreground"
                       onClick={() => setAvatarEditMode(false)}
