@@ -1,27 +1,21 @@
 /**
- * spotConfig — Per-spot configuration stored in localStorage.
+ * spotConfig — Per-spot configuration stored in Supabase (spot_configs table).
  *
  * Priority (1–5):
- *   1 = equal weight (no preference)
+ *   1 = equal weight
  *   2–5 = appears that many times per cycle relative to priority-1 spots
  *
- * Example: Spot A priority 3, Spot B priority 1
- *   Cycle: [A, A, A, B] → 4 slots total, repeats
- *
- * Scheduled spots (HH:MM) override the priority rotation at the configured time.
- * A scheduled spot ALWAYS wins over any favorited spot at that slot.
+ * Scheduled spots (scheduleStart/scheduleEnd) override the priority rotation.
  */
 
 export interface SpotConfig {
-  priority: number;           // 1–5, default 1
-  enabled: boolean;           // default true
+  priority: number;
+  enabled: boolean;
   scheduledAt: string | null; // kept for compatibility
-  scheduleStart: string | null; // "YYYY-MM-DDTHH:MM" — quando começa a tocar
-  scheduleEnd: string | null;   // "YYYY-MM-DDTHH:MM" — quando para de tocar
-  interval: number | null;    // 1–5 songs between plays; null = use global
+  scheduleStart: string | null;
+  scheduleEnd: string | null;
+  interval: number | null;
 }
-
-const STORAGE_KEY = "edu-spot-configs-v2";
 
 export type SpotConfigMap = Record<string, SpotConfig>;
 
@@ -34,75 +28,128 @@ export const DEFAULT_SPOT_CONFIG: SpotConfig = {
   interval: null,
 };
 
-// ── Load / Save ───────────────────────────────────────────────────────────────
+// ── In-memory cache ────────────────────────────────────────────────────────────
 
-export function loadSpotConfigs(): SpotConfigMap {
-  if (typeof window === "undefined") return {};
+let _configCache: SpotConfigMap | null = null;
+
+export function getCachedSpotConfigs(): SpotConfigMap {
+  return _configCache ?? {};
+}
+
+export function setCachedSpotConfigs(map: SpotConfigMap) {
+  _configCache = map;
+}
+
+// ── Load from DB (via API) ─────────────────────────────────────────────────────
+
+export async function fetchSpotConfigs(token: string): Promise<SpotConfigMap> {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") as SpotConfigMap;
+    const res = await fetch("/api/spots/configs", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return {};
+    const { configs } = await res.json();
+    _configCache = configs ?? {};
+    return _configCache!;
   } catch {
     return {};
   }
 }
 
-export function saveSpotConfigs(map: SpotConfigMap): void {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
-  window.dispatchEvent(new Event("spot-configs-changed"));
+// ── Save to DB (via API) ───────────────────────────────────────────────────────
+
+export async function saveSpotConfig(
+  spotId: string,
+  patch: Partial<SpotConfig>,
+  token: string
+): Promise<void> {
+  // Atualiza cache local imediatamente
+  const current = _configCache?.[spotId] ?? { ...DEFAULT_SPOT_CONFIG };
+  const updated = { ...current, ...patch };
+  if (_configCache) _configCache[spotId] = updated;
+
+  await fetch("/api/spots/configs", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      spot_id: spotId,
+      priority: updated.priority,
+      enabled: updated.enabled,
+      scheduleStart: updated.scheduleStart,
+      scheduleEnd: updated.scheduleEnd,
+      interval: updated.interval,
+    }),
+  });
+
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event("spot-configs-changed"));
+  }
+}
+
+// ── Compatibilidade — funções síncronas usam cache in-memory ──────────────────
+
+export function loadSpotConfigs(): SpotConfigMap {
+  return _configCache ?? {};
 }
 
 export function getSpotConfig(id: string): SpotConfig {
-  const map = loadSpotConfigs();
-  return map[id] ?? { ...DEFAULT_SPOT_CONFIG };
+  return _configCache?.[id] ?? { ...DEFAULT_SPOT_CONFIG };
 }
 
+/** @deprecated Use saveSpotConfig(id, patch, token) */
 export function updateSpotConfig(id: string, patch: Partial<SpotConfig>): void {
-  const map = loadSpotConfigs();
-  map[id] = { ...(map[id] ?? DEFAULT_SPOT_CONFIG), ...patch };
-  saveSpotConfigs(map);
+  if (!_configCache) _configCache = {};
+  _configCache[id] = { ...(_configCache[id] ?? DEFAULT_SPOT_CONFIG), ...patch };
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("spot-configs-changed"));
 }
 
-/** Remove config for deleted spots */
 export function removeSpotConfig(id: string): void {
-  const map = loadSpotConfigs();
-  delete map[id];
-  saveSpotConfigs(map);
+  if (_configCache) delete _configCache[id];
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("spot-configs-changed"));
 }
 
 // ── Weighted rotation builder ─────────────────────────────────────────────────
 
 /**
- * Builds the flat weighted rotation array.
- *
- * Each spot appears `priority` times in the cycle.
- * Disabled spots are excluded.
- * Spots without a scheduledAt participate in the rotation;
- * spots WITH a scheduledAt only fire at their scheduled time (not in rotation).
+ * Constrói rotação ponderada com distribuição espalhada (mesmo algoritmo do
+ * generateSpotsPlaylist.js antigo). Priority N = N aparições por ciclo,
+ * distribuídas uniformemente pela lista.
  */
 export function buildWeightedRotation<T extends { id: string }>(
   spots: T[],
   configs: SpotConfigMap
 ): T[] {
+  type Entry = { spot: T; tempFreq: number; frequencia: number };
+  const tempList: Entry[] = spots
+    .filter((s) => {
+      const cfg = configs[s.id] ?? DEFAULT_SPOT_CONFIG;
+      return cfg.enabled && !cfg.scheduledAt;
+    })
+    .map((s) => {
+      const freq = Math.max(1, Math.min(5, configs[s.id]?.priority ?? 1));
+      return { spot: s, tempFreq: freq, frequencia: freq };
+    });
+
+  if (!tempList.length) return [];
+
   const rotation: T[] = [];
-
-  for (const spot of spots) {
-    const cfg = configs[spot.id] ?? DEFAULT_SPOT_CONFIG;
-    if (!cfg.enabled) continue;
-    if (cfg.scheduledAt) continue; // scheduled-only spots are NOT in the rotation
-
-    const priority = Math.max(1, Math.min(5, cfg.priority));
-    for (let i = 0; i < priority; i++) {
-      rotation.push(spot);
+  let hasRemaining = true;
+  while (hasRemaining) {
+    hasRemaining = false;
+    for (const entry of tempList) {
+      if (entry.tempFreq > 0) {
+        hasRemaining = true;
+        rotation.push(entry.spot);
+        entry.tempFreq--;
+      }
     }
   }
-
   return rotation;
 }
 
-/**
- * Returns scheduled spots that should fire within `windowMinutes` minutes
- * of the given target time (default ±1 min).
- */
 export function getScheduledSpotsForTime<T extends { id: string }>(
   spots: T[],
   configs: SpotConfigMap,
@@ -111,13 +158,11 @@ export function getScheduledSpotsForTime<T extends { id: string }>(
 ): T[] {
   const hh = targetTime.getHours();
   const mm = targetTime.getMinutes();
-
   return spots.filter((spot) => {
     const cfg = configs[spot.id] ?? DEFAULT_SPOT_CONFIG;
     if (!cfg.enabled || !cfg.scheduledAt) return false;
-
     const [sh, sm] = cfg.scheduledAt.split(":").map(Number);
-    const diffMin = Math.abs((hh * 60 + mm) - (sh * 60 + sm));
+    const diffMin = Math.abs(hh * 60 + mm - (sh * 60 + sm));
     return diffMin <= windowMinutes;
   });
 }

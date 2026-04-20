@@ -1,7 +1,9 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { resolveApiUser, effectiveUserId } from "@/lib/api-auth";
 
 const YT_KEY = process.env.YOUTUBE_API_KEY!;
 const YT_BASE = "https://www.googleapis.com/youtube/v3";
+
 
 function truncateName(name: string, max = 40): string {
   const clean = name.trim();
@@ -132,25 +134,51 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const action = searchParams.get("action");
 
-  // ── Search playlists by name ──
+  // ── Search playlists by name (trusted music channels only) ──
   if (action === "search") {
     const q = searchParams.get("q");
     if (!q) return NextResponse.json({ error: "q required" }, { status: 400 });
 
+    // Canais confiáveis — mesma lista usada na importação (POST)
+    const TRUSTED_CHANNEL_PATTERNS = [
+      /- topic$/i,
+      /vevo/i,
+      /kondzilla/i,
+      /gr6 explode/i,
+      /som livre/i,
+      /warner music brasil/i,
+      /mk music/i,
+      /musile records/i,
+      /todah music/i,
+      /graça music/i,
+      /hillsong/i,
+      /elevation worship/i,
+      /bethel music/i,
+      /maverick city music/i,
+    ];
+
+    const isTrustedChannel = (channel: string) =>
+      TRUSTED_CHANNEL_PATTERNS.some((p) => p.test(channel ?? ""));
+
+    // Busca mais resultados para ter margem após o filtro de canal
+    const musicQuery = `${q} playlist`;
     const res = await fetch(
-      `${YT_BASE}/search?part=snippet&type=playlist&q=${encodeURIComponent(q)}&maxResults=8&key=${YT_KEY}`
+      `${YT_BASE}/search?part=snippet&type=playlist&q=${encodeURIComponent(musicQuery)}&maxResults=50&key=${YT_KEY}`
     );
     const data = await res.json();
 
     if (!res.ok) return NextResponse.json({ error: data.error?.message ?? "YouTube error" }, { status: 502 });
 
-    const results = (data.items ?? []).map((item: any) => ({
-      id: item.id?.playlistId,
-      name: item.snippet?.title,
-      description: item.snippet?.description ?? null,
-      cover_url: item.snippet?.thumbnails?.medium?.url ?? item.snippet?.thumbnails?.default?.url ?? null,
-      channel: item.snippet?.channelTitle ?? null,
-    }));
+    const results = (data.items ?? [])
+      .filter((item: any) => isTrustedChannel(item.snippet?.channelTitle ?? ""))
+      .slice(0, 8)
+      .map((item: any) => ({
+        id: item.id?.playlistId,
+        name: item.snippet?.title,
+        description: item.snippet?.description ?? null,
+        cover_url: item.snippet?.thumbnails?.medium?.url ?? item.snippet?.thumbnails?.default?.url ?? null,
+        channel: item.snippet?.channelTitle ?? null,
+      }));
 
     return NextResponse.json({ results });
   }
@@ -199,8 +227,18 @@ export async function GET(request: Request) {
 
     const meta = metaData.items[0];
     const totalCount: number = meta.contentDetails?.itemCount ?? 0;
-    const itemsRes = await fetch(`${YT_BASE}/playlistItems?part=snippet,contentDetails&playlistId=${playlistId}&maxResults=50&key=${YT_KEY}`);
-    const itemsData = await itemsRes.json();
+
+    // Busca todas as páginas (máx 5 páginas = 250 itens para limitar cota)
+    const allRawItems: any[] = [];
+    let pageToken: string | undefined = undefined;
+    for (let page = 0; page < 5; page++) {
+      const pageUrl: string = `${YT_BASE}/playlistItems?part=snippet,contentDetails&playlistId=${playlistId}&maxResults=50&key=${YT_KEY}${pageToken ? `&pageToken=${pageToken}` : ""}`;
+      const itemsRes: Response = await fetch(pageUrl);
+      const itemsData: { items?: unknown[]; nextPageToken?: string } = await itemsRes.json();
+      allRawItems.push(...(itemsData.items ?? []));
+      if (!itemsData.nextPageToken) break;
+      pageToken = itemsData.nextPageToken;
+    }
 
     // Títulos que indicam conteúdo não-musical
     const NON_MUSIC_KEYWORDS = [
@@ -210,27 +248,26 @@ export async function GET(request: Request) {
       "movie", "filme", "episode", "episódio", "unboxing", "gameplay",
     ];
 
-    const rawItems = (itemsData.items ?? []).filter((item: any) => {
+    const rawItems = allRawItems.filter((item: any) => {
       const title = (item.snippet?.title ?? "").toLowerCase();
       if (title === "private video" || title === "deleted video") return false;
       if (NON_MUSIC_KEYWORDS.some((kw) => title.includes(kw))) return false;
       return true;
     });
 
-    // Buscar detalhes dos vídeos (duração + categoria) em lote
-    const videoIds = rawItems
-      .map((item: any) => item.contentDetails?.videoId ?? item.snippet?.resourceId?.videoId)
-      .filter(Boolean)
-      .join(",");
-
+    // Buscar detalhes dos vídeos (duração + categoria) em lotes de 50
     let durationMap: Record<string, number> = {};
     let categoryMap: Record<string, string> = {};
 
-    if (videoIds) {
-      const detailsRes = await fetch(`${YT_BASE}/videos?part=contentDetails,snippet&id=${videoIds}&key=${YT_KEY}`);
+    const allVideoIds = rawItems
+      .map((item: any) => item.contentDetails?.videoId ?? item.snippet?.resourceId?.videoId)
+      .filter(Boolean);
+
+    for (let i = 0; i < allVideoIds.length; i += 50) {
+      const batch = allVideoIds.slice(i, i + 50).join(",");
+      const detailsRes = await fetch(`${YT_BASE}/videos?part=contentDetails,snippet&id=${batch}&key=${YT_KEY}`);
       const detailsData = await detailsRes.json();
       for (const v of detailsData.items ?? []) {
-        // Parse ISO 8601 duration (PT3M45S → seconds)
         const dur = v.contentDetails?.duration ?? "";
         const match = dur.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
         if (match) {
@@ -258,7 +295,8 @@ export async function GET(request: Request) {
           duration_seconds: duration || null,
         };
       })
-      .filter(Boolean);
+      .filter(Boolean)
+      .slice(0, 200); // Preview retorna até 200; o POST aplica o limite real por role
 
     const preview = {
       playlist_id: playlistId,
@@ -277,49 +315,94 @@ export async function GET(request: Request) {
 }
 
 // POST /api/import-playlist — cria a playlist e insere as músicas
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
+  const user = await resolveApiUser(request);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const origin = new URL(request.url).origin;
-  const { playlist_name, description, cover_url, tracks, user_id, playlist_id: ytPlaylistId } = await request.json();
+  const { playlist_name, description, cover_url, tracks, user_id: targetUserId, playlist_id: ytPlaylistId } = await request.json();
+
+  const userId = effectiveUserId(user, targetUserId);
 
   if (!playlist_name || !tracks?.length) {
     return NextResponse.json({ error: "Dados inválidos" }, { status: 400 });
   }
 
-  // Para faixas sem youtube_video_id, tenta buscar no YouTube.
-  // Se a busca falhar (cota esgotada, etc.), importa mesmo assim com file_path="imported/pending"
-  // — o cascade resolve o YouTube ID automaticamente quando a música for tocada.
-  const resolvedTracks = await Promise.all(
-    tracks.map(async (t: any) => {
-      if (t.youtube_video_id) return t;
-      const result = await searchYouTubeTrack(t.title, t.artist ?? "");
-      if (result) return { ...t, youtube_video_id: result.youtube_video_id, cover_url: t.cover_url ?? result.cover_url };
-      // Importa sem ID — cascade buscará no momento da reprodução
-      return { ...t, youtube_video_id: null };
-    })
-  );
+  // Admin pode importar até 200 músicas; clientes até 50
+  const TRACK_LIMIT = user.isAdmin ? 200 : 50;
+
+  // Canais confiáveis — só estes têm áudio limpo (sem barulho de videoclipe)
+  const TRUSTED_CHANNEL_PATTERNS = [
+    /- topic$/i,
+    /vevo/i,
+    /kondzilla/i,
+    /gr6 explode/i,
+    /som livre/i,
+    /warner music brasil/i,
+    /mk music/i,
+    /musile records/i,
+    /todah music/i,
+    /graça music/i,
+    /hillsong/i,
+    /elevation worship/i,
+    /bethel music/i,
+    /maverick city music/i,
+  ];
+
+  function isTrustedChannel(channelTitle: string): boolean {
+    const lower = (channelTitle ?? "").toLowerCase().trim();
+    return TRUSTED_CHANNEL_PATTERNS.some((p) => p.test(lower));
+  }
+
+  // Só entra no banco música de canal confiável (Topic/VEVO etc).
+  // Clipes de canais não-confiáveis são descartados — não entram no banco.
+  const resolvedTracks = tracks.filter((t: any) =>
+    t.youtube_video_id && isTrustedChannel(t.artist ?? "")
+  ).slice(0, TRACK_LIMIT);
 
   // Só rejeita se a lista de faixas estiver completamente vazia
   if (!resolvedTracks.length) {
     return NextResponse.json({ error: "Nenhuma faixa encontrada" }, { status: 400 });
   }
 
+  // ── DETECÇÃO DE PLAYLIST DUPLICADA ──
+  // Se já existe playlist com o mesmo youtube_playlist_id ou mesmo nome+músicas,
+  // avisa o usuário e retorna a playlist existente
+  if (ytPlaylistId) {
+    const { data: existingPlaylist } = await user.db
+      .from("playlists")
+      .select("id, name, cover_url, created_by")
+      .eq("youtube_playlist_id", ytPlaylistId)
+      .maybeSingle();
+    if (existingPlaylist) {
+      return NextResponse.json({
+        duplicate: true,
+        message: "Esta playlist já existe no sistema",
+        playlist: existingPlaylist,
+      });
+    }
+  }
+
+  // Forward auth header to internal API calls
+  const authHeader = request.headers.get("authorization");
+  const internalFetchHeaders: Record<string, string> = { "Content-Type": "application/json" };
+  if (authHeader) internalFetchHeaders["Authorization"] = authHeader;
+
   // 1. Criar a playlist como global (compartilhada entre todos os clientes)
   const createRes = await fetch(`${origin}/api/playlists`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: internalFetchHeaders,
     body: JSON.stringify({
       name: playlist_name,
-      description: description ?? null,
       cover_url: cover_url ?? null,
-      created_by: user_id ?? null,
-      is_global: true,
+      created_by: userId,
       youtube_playlist_id: ytPlaylistId ?? null,
     }),
   });
 
   const createData = await createRes.json();
   if (!createRes.ok || !createData.playlist?.id) {
-    return NextResponse.json({ error: "Erro ao criar playlist" }, { status: 500 });
+    return NextResponse.json({ error: createData.error ?? "Erro ao criar playlist" }, { status: 500 });
   }
 
   const playlistId = createData.playlist.id;
@@ -330,7 +413,7 @@ export async function POST(request: Request) {
     const filePath = track.youtube_video_id ? `youtube:${track.youtube_video_id}` : "imported/pending";
     const songRes = await fetch(`${origin}/api/songs`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: internalFetchHeaders,
       body: JSON.stringify({
         title: track.title,
         artist: track.artist || null,
@@ -347,13 +430,21 @@ export async function POST(request: Request) {
   // 3. Adicionar músicas à playlist
   const songsRes = await fetch(`${origin}/api/playlist-songs`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: internalFetchHeaders,
     body: JSON.stringify({ playlist_id: playlistId, song_ids: songIds }),
   });
 
   if (!songsRes.ok) {
     return NextResponse.json({ error: "Erro ao inserir músicas" }, { status: 500 });
   }
+
+  // Dispara limpeza e curadoria em background — sem await, não bloqueia a resposta.
+  const internalSecret = process.env.INTERNAL_API_SECRET;
+  const internalHeaders: Record<string, string> = internalSecret
+    ? { "x-internal-call": internalSecret }
+    : {};
+  fetch(`${origin}/api/admin/clean-pending`, { method: "POST", headers: internalHeaders }).catch(() => {});
+  fetch(`${origin}/api/admin/gemini-curator`, { method: "POST", headers: internalHeaders }).catch(() => {});
 
   return NextResponse.json({ playlist_id: playlistId, songs_count: songIds.length });
 }

@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Clock, Loader2, CalendarIcon, Volume2 } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Clock, Loader2, CalendarIcon, Volume2, Lock } from "lucide-react";
+import { useClientFeatures } from "@/hooks/useClientFeatures";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { Button } from "@/components/ui/button";
@@ -107,6 +108,15 @@ const calendarClassNames = {
 };
 
 const PlaylistScheduleDialog = ({ playlistId, playlistName, open, onOpenChange, onSaved, pendingMode, onPendingSave }: Props) => {
+  const { isFeatureLocked, consumeFeature } = useClientFeatures();
+  const isSaveLocked = isFeatureLocked("programar_playlists");
+  const [lockedBadge, setLockedBadge] = useState(false);
+  const lockedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showBadge = () => {
+    setLockedBadge(true);
+    if (lockedTimer.current) clearTimeout(lockedTimer.current);
+    lockedTimer.current = setTimeout(() => setLockedBadge(false), 3000);
+  };
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [schedule, setSchedule] = useState<Schedule>({
@@ -256,8 +266,6 @@ const PlaylistScheduleDialog = ({ playlistId, playlistName, open, onOpenChange, 
       start_time: schedule.start_time,
       end_time: schedule.end_time,
       days_of_week: allDays,
-      is_active: schedule.is_active,
-      updated_at: new Date().toISOString(),
       start_date: format(schedule.start_date, "yyyy-MM-dd"),
       end_date: format(schedule.end_date, "yyyy-MM-dd"),
     };
@@ -285,9 +293,9 @@ const PlaylistScheduleDialog = ({ playlistId, playlistName, open, onOpenChange, 
     if (error) {
       toast.error(`Erro ao salvar programação: ${error.message}`);
     } else {
+      await consumeFeature("programar_playlists");
       toast.success("Programação salva!");
       sessionStorage.removeItem(FORM_CACHE_KEY + playlistId);
-      // Notifica qualquer painel montado para atualizar imediatamente
       window.dispatchEvent(new CustomEvent("schedule-saved"));
       onSaved?.();
       onOpenChange(false);
@@ -350,14 +358,8 @@ const PlaylistScheduleDialog = ({ playlistId, playlistName, open, onOpenChange, 
               <span className="text-sm font-medium text-primary-foreground">Ativar automaticamente</span>
               <Switch
                 checked={schedule.is_active}
-                onCheckedChange={async (checked) => {
+                onCheckedChange={(checked) => {
                   setSchedule((p) => ({ ...p, is_active: checked }));
-                  if (schedule.id) {
-                    await supabase
-                      .from("playlist_schedules")
-                      .update({ is_active: checked, updated_at: new Date().toISOString() })
-                      .eq("id", schedule.id);
-                  }
                 }}
               />
             </div>
@@ -458,6 +460,7 @@ const PlaylistScheduleDialog = ({ playlistId, playlistName, open, onOpenChange, 
                 </label>
                 <input
                   type="time"
+                  title="Horário de início"
                   value={schedule.start_time}
                   onChange={(e) => setSchedule((p) => ({ ...p, start_time: e.target.value }))}
                   className="w-full bg-secondary/50 border border-border rounded-lg px-3 py-2.5 text-sm text-primary-foreground outline-none focus:border-primary"
@@ -470,6 +473,7 @@ const PlaylistScheduleDialog = ({ playlistId, playlistName, open, onOpenChange, 
                 </label>
                 <input
                   type="time"
+                  title="Horário de fim"
                   value={schedule.end_time}
                   onChange={(e) => setSchedule((p) => ({ ...p, end_time: e.target.value }))}
                   className="w-full bg-secondary/50 border border-border rounded-lg px-3 py-2.5 text-sm text-primary-foreground outline-none focus:border-primary"
@@ -507,8 +511,16 @@ const PlaylistScheduleDialog = ({ playlistId, playlistName, open, onOpenChange, 
               </div>
             </div>
 
+            {lockedBadge && (
+              <div className="flex justify-center pointer-events-none pb-1">
+                <div className="flex items-center gap-1.5 bg-background/90 backdrop-blur-sm border border-border/50 rounded-full px-3 py-1.5 shadow-md whitespace-nowrap">
+                  <Lock className="h-3 w-3 text-primary shrink-0" />
+                  <p className="text-xs font-medium text-foreground">Atualize seu plano para usar esse recurso.</p>
+                </div>
+              </div>
+            )}
             <div className="flex gap-2 pt-2">
-              <Button onClick={handleSave} disabled={saving} className="flex-1 gap-1.5">
+              <Button onClick={isSaveLocked ? showBadge : handleSave} disabled={!isSaveLocked && saving} className="flex-1 gap-1.5">
                 {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 Salvar
               </Button>

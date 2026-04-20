@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Upload, Music, Loader2, Link as LinkIcon, CheckCircle2, X, Clock, ImagePlus, Plus, Trash2, Heart } from "lucide-react";
+import { Upload, Music, Loader2, Link as LinkIcon, CheckCircle2, X, Clock, ImagePlus, Plus, Trash2, Heart, ChevronDown } from "lucide-react";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,7 +11,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toast } from "sonner";
 import { useClientFeatures } from "@/hooks/useClientFeatures";
 import { useActivityTracker } from "@/hooks/useActivityTracker";
+import { useIsAdmin } from "@/hooks/useIsAdmin";
+import { supabase } from "@/lib/supabase/client";
 import PlaylistScheduleDialog from "./PlaylistScheduleDialog";
+import { authedFetch } from "@/lib/authedFetch";
 
 interface MusicUploadProps {
   onUploadComplete?: () => void;
@@ -67,8 +71,10 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0, skipped: 0, errors: 0 });
   const fileRef = useRef<HTMLInputElement>(null);
-  const { features } = useClientFeatures();
+  const { features, consumeFeature, isFeatureLocked } = useClientFeatures();
   const { trackUpload } = useActivityTracker();
+  const { isAdmin } = useIsAdmin();
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const offlineEnabled = features["modo_offline"] === true;
   const abortRef = useRef(false);
 
@@ -96,13 +102,32 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
   const [isDragging, setIsDragging] = useState(false);
   const dragCounter = useRef(0);
 
-  useEffect(() => { loadGenres(); }, []);
+  const [playlists, setPlaylists] = useState<PlaylistRecord[]>([]);
+  const [playlistSearch, setPlaylistSearch] = useState("");
+  const [playlistPopoverOpen, setPlaylistPopoverOpen] = useState(false);
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadGenres();
+    loadPlaylists();
+    supabase.auth.getUser().then(({ data }) => {
+      if (data.user) setCurrentUserId(data.user.id);
+    });
+  }, []);
 
   const loadGenres = async () => {
     try {
-      const res = await fetch("/api/genres");
+      const res = await authedFetch("/api/genres");
       const data = await res.json();
       setGenres(data.genres ?? []);
+    } catch {}
+  };
+
+  const loadPlaylists = async () => {
+    try {
+      const res = await authedFetch("/api/playlists");
+      const data = await res.json();
+      setPlaylists(data.playlists ?? []);
     } catch {}
   };
 
@@ -124,7 +149,7 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
     }
 
     try {
-      const res = await fetch("/api/genres", {
+      const res = await authedFetch("/api/genres", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name.toLowerCase().replace(/\s+/g, "_"), display_name: name }),
@@ -147,7 +172,7 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
 
   const handleDeleteGenre = async (id: string, genreName: string) => {
     try {
-      await fetch("/api/genres", {
+      await authedFetch("/api/genres", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id }),
@@ -186,7 +211,8 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
     const audioFiles = files.filter((f) => f.type.startsWith("audio/") || f.type.startsWith("video/"));
     if (audioFiles.length === 0) { toast.error("Nenhum arquivo de áudio selecionado."); return; }
     const combined = [...selectedFiles, ...audioFiles];
-    if (combined.length > MAX_FILES) { toast.error(`Máximo de ${MAX_FILES} arquivos.`); return; }
+    const maxFiles = isAdmin ? MAX_FILES : 50;
+    if (combined.length > maxFiles) { toast.error(`Máximo de ${maxFiles} arquivos por playlist.`); return; }
     setSelectedFiles(combined);
   };
 
@@ -272,7 +298,7 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
     const name = playlistName.trim() || `Upload ${new Date().toLocaleDateString("pt-BR")}`;
 
     // Check if playlist with same name exists
-    const listRes = await fetch("/api/playlists");
+    const listRes = await authedFetch("/api/playlists");
     const listData = await listRes.json();
     const playlists: PlaylistRecord[] = listData.playlists ?? [];
     const existing = playlists.find((p) => p.name === name);
@@ -282,7 +308,7 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
       if (coverFile) {
         const coverUrl = await getCoverDataUrl();
         if (coverUrl && coverUrl !== existing.cover_url) {
-          await fetch("/api/playlists", {
+          await authedFetch("/api/playlists", {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ id: existing.id, cover_url: coverUrl }),
@@ -294,7 +320,7 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
     }
 
     const coverUrl = await getCoverDataUrl();
-    const createRes = await fetch("/api/playlists", {
+    const createRes = await authedFetch("/api/playlists", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, is_public: true }),
@@ -307,7 +333,7 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
 
     const created: PlaylistRecord = createData.playlist;
     if (coverUrl) {
-      await fetch("/api/playlists", {
+      await authedFetch("/api/playlists", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: created.id, cover_url: coverUrl }),
@@ -319,7 +345,7 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
   };
 
   const appendSongsToPlaylist = async (playlistId: string, songIds: string[]) => {
-    await fetch("/api/playlist-songs", {
+    await authedFetch("/api/playlist-songs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ playlist_id: playlistId, song_ids: songIds }),
@@ -352,7 +378,7 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
       if (genre) formData.append("genre", genre);
       formData.append("duration", String(Math.round(duration)));
 
-      const res = await fetch("/api/songs", { method: "POST", body: formData });
+      const res = await authedFetch("/api/songs", { method: "POST", body: formData });
       const data = await res.json();
 
       if (!res.ok) return { status: "error" };
@@ -364,13 +390,18 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
     }
   };
 
-  const isPlaylistValid = !!coverFile && !!playlistName.trim() && !!selectedGenre;
+  const isNewPlaylistValid = !!coverFile && !!playlistName.trim() && !!selectedGenre;
+  const isPlaylistValid = isNewPlaylistValid || !!selectedPlaylistId;
 
   const handleBatchUpload = async () => {
     if (selectedFiles.length === 0) return;
-    if (!coverFile) { toast.error("Adicione uma capa para a playlist."); return; }
-    if (!playlistName.trim()) { toast.error("Digite o nome da playlist."); return; }
-    if (!selectedGenre) { toast.error("Selecione o gênero da playlist."); return; }
+    if (!isPlaylistValid) { toast.error("Selecione uma playlist ou preencha capa, nome e gênero."); return; }
+
+    // Verifica se recurso está liberado (não-admin)
+    if (!isAdmin && isFeatureLocked("enviar_musicas")) {
+      toast.error("Recurso bloqueado. Atualize seu plano.");
+      return;
+    }
 
     setUploading(true);
     abortRef.current = false;
@@ -378,8 +409,28 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
     setUploadProgress({ done: 0, total, skipped: 0, errors: 0 });
 
     const genre = selectedGenre || null;
-    const playlist = await ensurePlaylist();
+
+    let playlist: PlaylistRecord | null = null;
+    if (selectedPlaylistId) {
+      playlist = playlists.find(p => p.id === selectedPlaylistId) || null;
+    } else {
+      playlist = await ensurePlaylist();
+    }
     if (!playlist) { setUploading(false); return; }
+
+    // Limite de 50 músicas por playlist para usuário (admin sem limite)
+    if (!isAdmin) {
+      try {
+        const countRes = await authedFetch(`/api/playlist-songs?playlist_id=${playlist.id}`);
+        const countData = await countRes.json();
+        const currentCount = countData.songs?.length ?? 0;
+        if (currentCount + total > 50) {
+          toast.error(`Limite de 50 músicas por playlist. Esta playlist já tem ${currentCount} música(s). Você pode adicionar no máximo ${50 - currentCount}.`);
+          setUploading(false);
+          return;
+        }
+      } catch {}
+    }
 
     setCreatedPlaylistId(playlist.id);
 
@@ -444,16 +495,23 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
       return;
     }
 
+    if (!isPlaylistValid) { toast.error("Selecione uma playlist ou preencha capa, nome e gênero."); return; }
+
     setUploading(true);
     try {
-      const playlist = await ensurePlaylist();
+      let playlist: PlaylistRecord | null = null;
+      if (selectedPlaylistId) {
+        playlist = playlists.find(p => p.id === selectedPlaylistId) || null;
+      } else {
+        playlist = await ensurePlaylist();
+      }
       if (!playlist) { setUploading(false); return; }
 
       const segments = new URL(directUrl.trim()).pathname.split("/");
       const filename = decodeURIComponent(segments[segments.length - 1] || "audio");
       const parsed = parseTitleAndArtistFromFilename(filename);
 
-      const res = await fetch("/api/songs", {
+      const res = await authedFetch("/api/songs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -492,6 +550,15 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
 
   const progressPercent = uploadProgress.total > 0 ? (uploadProgress.done / uploadProgress.total) * 100 : 0;
 
+  // Admin vê todas. Usuário vê só as que criou/importou.
+  const userPlaylists = isAdmin
+    ? playlists
+    : playlists.filter(p => p.created_by === currentUserId);
+
+  const filteredPlaylists = userPlaylists.filter(p =>
+    !playlistSearch || p.name.toLowerCase().includes(playlistSearch.toLowerCase())
+  );
+
   const sortedGenres = [...genres].sort((a, b) => {
     const aFav = favoriteGenres.has(a.id);
     const bFav = favoriteGenres.has(b.id);
@@ -500,55 +567,92 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
     return a.display_name.localeCompare(b.display_name);
   });
 
-  return (
-    <div className="space-y-4">
+  const selectedPlaylistName = selectedPlaylistId ? playlists.find(p => p.id === selectedPlaylistId)?.name : null;
 
-      {/* Playlist Identity Form */}
-      <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr_1fr] gap-3 items-end">
-        {/* Cover upload */}
-        <div className="flex flex-col items-center gap-1">
-          <Label className="text-xs text-muted-foreground">Capa</Label>
-          <button
-            type="button"
-            onClick={() => coverRef.current?.click()}
-            className="w-16 h-16 rounded-lg border-2 border-dashed border-muted-foreground/40 hover:border-primary/70 transition-colors flex items-center justify-center overflow-hidden bg-secondary/30"
-          >
-            {coverPreview ? (
-              <img src={coverPreview} alt="Capa" className="w-full h-full object-cover" />
-            ) : (
-              <ImagePlus className="h-6 w-6 text-muted-foreground" />
-            )}
+  return (
+    <div className="flex flex-col flex-1 min-h-0">
+      <div className="flex-1 overflow-y-auto scrollbar-none space-y-3 pr-1">
+
+        {/* Dropzone — altura fixa, NUNCA muda */}
+        <div
+          onDragEnter={handleDragEnter}
+          onDragLeave={handleDragLeave}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
+          className={`upload-dropzone border-2 rounded-lg transition-colors duration-300 h-24 flex flex-col items-center justify-center ${isDragging || selectedFiles.length > 0 ? "dragging" : ""}`}
+        >
+          {tab === "link" ? (
+            <div className="w-full px-3 space-y-1">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <LinkIcon className="h-4 w-4 shrink-0" />
+                <span className="text-xs font-medium">Cole a URL direta do áudio</span>
+              </div>
+              <Input value={directUrl} onChange={(e) => setDirectUrl(e.target.value)} placeholder="https://exemplo.com/musica.mp3"
+                className="bg-secondary/50 border-muted text-sm h-9" onKeyDown={(e) => e.key === "Enter" && handleUrlUpload()} />
+            </div>
+          ) : uploading && uploadProgress.total > 0 ? (
+            <div className="w-full px-3 space-y-1">
+              <Progress value={progressPercent} className="h-2 w-full" />
+              <div className="flex items-center justify-between w-full text-xs text-muted-foreground">
+                <span>{uploadProgress.done}/{uploadProgress.total} processados</span>
+                <div className="flex gap-2">
+                  {uploadProgress.skipped > 0 && <span className="text-primary">{uploadProgress.skipped} dup</span>}
+                  {uploadProgress.errors > 0 && <span className="text-destructive">{uploadProgress.errors} erros</span>}
+                </div>
+              </div>
+            </div>
+          ) : selectedFiles.length > 0 ? (
+            <div className="flex items-center gap-2 cursor-pointer" onClick={() => fileRef.current?.click()}>
+              <CheckCircle2 className="h-5 w-5 text-primary shrink-0" />
+              <span className="text-sm font-medium text-primary-foreground">{selectedFiles.length} arquivo(s) prontos</span>
+              <button type="button" title="Limpar" onClick={(e) => { e.stopPropagation(); resetState(); }} className="text-muted-foreground hover:text-destructive ml-1"><X className="h-4 w-4" /></button>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center cursor-pointer" onClick={() => fileRef.current?.click()}>
+              <Music className="h-8 w-8 text-muted-foreground mb-1" />
+              <p className="text-sm text-muted-foreground">{isDragging ? "Solte aqui..." : "Add arquivos ou link"}</p>
+            </div>
+          )}
+          <input ref={fileRef} type="file" accept="audio/*" multiple onChange={handleFileChange} className="hidden" title="Selecionar arquivos" />
+          <button type="button" title={tab === "upload" ? "Usar link direto" : "Enviar arquivos"} onClick={() => { setTab(tab === "upload" ? "link" : "upload"); resetState(); }}
+            className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-primary px-2 py-0.5 rounded bg-secondary/30 hover:bg-secondary/50 mt-1">
+            {tab === "upload" ? (<><LinkIcon className="h-3 w-3" /> Usar link direto</>) : (<><Music className="h-3 w-3" /> Enviar arquivos</>)}
           </button>
-          <input ref={coverRef} type="file" accept="image/*" onChange={handleCoverChange} className="hidden" />
         </div>
 
-        {/* Playlist name + heart */}
-        <div className="flex flex-col gap-1">
-          <Label className="text-xs text-muted-foreground">Nome da Playlist</Label>
-          <div className="flex items-center gap-2">
-            <Input
-              value={playlistName}
-              onChange={(e) => setPlaylistName(e.target.value)}
-              placeholder="Ex: Jazz Noturno"
-              className="bg-secondary/50 border-muted text-sm flex-1"
-            />
-            <button type="button" onClick={() => setIsFavorite(!isFavorite)} title="Favoritar playlist" className="shrink-0 transition-colors">
-              <Heart className={`h-5 w-5 transition-colors ${isFavorite ? "fill-primary text-primary" : "text-muted-foreground hover:text-primary"}`} />
+        {/* Capa + Nome + Heart + Clock */}
+        <div className="grid grid-cols-[auto_1fr] gap-3 items-end">
+          <div className="flex flex-col items-center gap-1">
+            <Label className="text-xs text-muted-foreground">Capa</Label>
+            <button type="button" title="Selecionar capa" onClick={() => coverRef.current?.click()}
+              className="w-14 h-14 rounded-lg border-2 border-dashed border-muted-foreground/40 hover:border-primary/70 transition-colors flex items-center justify-center overflow-hidden bg-secondary/30">
+              {coverPreview ? <img src={coverPreview} alt="Capa" className="w-full h-full object-cover" /> : <ImagePlus className="h-5 w-5 text-muted-foreground" />}
             </button>
-            <button type="button" onClick={() => { if (createdPlaylistId) setScheduleOpen(true); else toast.info("Envie as músicas primeiro para agendar a playlist."); }} title="Agendar playlist" className="shrink-0 transition-colors">
-              <Clock className="h-5 w-5 text-muted-foreground hover:text-primary transition-colors" />
-            </button>
+            <input ref={coverRef} type="file" accept="image/*" onChange={handleCoverChange} className="hidden" title="Selecionar capa" />
+          </div>
+          <div className="flex flex-col gap-1 min-w-0">
+            <Label className="text-xs text-muted-foreground">Nome da Playlist</Label>
+            <div className="flex items-center gap-1.5">
+              <Input value={playlistName} onChange={(e) => { setPlaylistName(e.target.value); setSelectedPlaylistId(null); }} placeholder="Ex: Jazz Noturno"
+                className="bg-secondary/50 border-muted text-sm h-9 min-w-0 flex-1 focus:ring-0 focus:ring-offset-0" />
+              <button type="button" onClick={() => setIsFavorite(!isFavorite)} title="Favoritar" className="shrink-0">
+                <Heart className={`h-5 w-5 ${isFavorite ? "fill-primary text-primary" : "text-muted-foreground hover:text-primary"}`} />
+              </button>
+              <button type="button" onClick={() => { if (createdPlaylistId) setScheduleOpen(true); else toast.info("Envie as músicas primeiro."); }} title="Agendar" className="shrink-0">
+                <Clock className="h-5 w-5 text-muted-foreground hover:text-primary" />
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Genre */}
+        {/* Gênero — dropdown abre como portal */}
         <div className="flex flex-col gap-1">
           <Label className="text-xs text-muted-foreground">Gênero</Label>
           <Select value={selectedGenre} onValueChange={setSelectedGenre}>
-            <SelectTrigger className="bg-secondary/50 border-muted text-sm">
+            <SelectTrigger className="bg-secondary/50 border-muted text-sm h-9 focus:ring-0 focus:ring-offset-0">
               <SelectValue placeholder="Selecione o gênero" />
             </SelectTrigger>
-            <SelectContent className="max-h-60" data-upload-keep-open="true">
+            <SelectContent className="max-h-60" position="popper" side="top" sideOffset={4} data-upload-keep-open="true">
               {sortedGenres.map((g) => (
                 <div key={g.id} className="flex items-center group">
                   <SelectItem value={g.name} className="flex-1 pr-1">
@@ -558,31 +662,30 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
                     </span>
                   </SelectItem>
                   <div className="flex items-center gap-0.5 pr-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button type="button" onPointerDown={(e) => { e.stopPropagation(); toggleFavoriteGenre(g.id); }} className="p-0.5 rounded hover:bg-primary/20 transition-colors" title="Favoritar gênero">
+                    <button type="button" onPointerDown={(e) => { e.stopPropagation(); toggleFavoriteGenre(g.id); }} className="p-0.5 rounded hover:bg-primary/20" title="Favoritar gênero">
                       <Heart className={`h-3.5 w-3.5 ${favoriteGenres.has(g.id) ? "fill-primary text-primary" : "text-muted-foreground"}`} />
                     </button>
-                    <button type="button" onPointerDown={(e) => { e.stopPropagation(); handleDeleteGenre(g.id, g.display_name); }} className="p-0.5 rounded hover:bg-destructive/20 transition-colors" title="Excluir gênero">
+                    <button type="button" onPointerDown={(e) => { e.stopPropagation(); handleDeleteGenre(g.id, g.display_name); }} className="p-0.5 rounded hover:bg-destructive/20" title="Excluir gênero">
                       <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
                     </button>
                   </div>
                 </div>
               ))}
-
               <div className="border-t border-muted/30 mt-1 pt-1 px-2 pb-1">
                 {showAddGenre ? (
                   <div className="flex items-center gap-1">
                     <Input value={newGenreName} onChange={(e) => setNewGenreName(e.target.value)} placeholder="Novo gênero..." className="h-7 text-xs bg-secondary/50 border-muted"
                       onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") handleAddGenre(); }}
                       onKeyUp={(e) => e.stopPropagation()} autoFocus />
-                    <button type="button" onPointerDown={(e) => { e.stopPropagation(); handleAddGenre(); }} disabled={addingGenre} className="p-1 rounded bg-primary/20 hover:bg-primary/40 transition-colors">
+                    <button type="button" onPointerDown={(e) => { e.stopPropagation(); handleAddGenre(); }} disabled={addingGenre} className="p-1 rounded bg-primary/20 hover:bg-primary/40" title="Confirmar">
                       {addingGenre ? <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" /> : <Plus className="h-3.5 w-3.5 text-primary" />}
                     </button>
-                    <button type="button" onPointerDown={(e) => { e.stopPropagation(); setShowAddGenre(false); setNewGenreName(""); }} className="p-1 rounded hover:bg-destructive/20 transition-colors">
+                    <button type="button" onPointerDown={(e) => { e.stopPropagation(); setShowAddGenre(false); setNewGenreName(""); }} className="p-1 rounded hover:bg-destructive/20" title="Cancelar">
                       <X className="h-3.5 w-3.5 text-muted-foreground" />
                     </button>
                   </div>
                 ) : (
-                  <button type="button" onPointerDown={(e) => { e.stopPropagation(); setShowAddGenre(true); }} className="flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 transition-colors w-full py-1">
+                  <button type="button" onPointerDown={(e) => { e.stopPropagation(); setShowAddGenre(true); }} className="flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 w-full py-1" title="Adicionar gênero">
                     <Plus className="h-3.5 w-3.5" /> Adicionar gênero
                   </button>
                 )}
@@ -590,91 +693,78 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
             </SelectContent>
           </Select>
         </div>
-      </div>
 
-      {/* Unified dropzone */}
-      <div
-        onDragEnter={handleDragEnter}
-        onDragLeave={handleDragLeave}
-        onDragOver={handleDragOver}
-        onDrop={handleDrop}
-        className={`upload-dropzone border-2 rounded-lg p-4 transition-all duration-300 ${isDragging || selectedFiles.length > 0 ? "dragging" : ""}`}
-      >
-        {tab === "link" ? (
-          <div className="py-4 space-y-3">
-            <div className="flex items-center gap-2 text-muted-foreground mb-1">
-              <LinkIcon className="h-5 w-5" />
-              <span className="text-sm font-medium">Cole a URL direta do áudio</span>
-            </div>
-            <div className="flex gap-2">
-              <Input value={directUrl} onChange={(e) => setDirectUrl(e.target.value)} placeholder="https://exemplo.com/musica.mp3"
-                className="bg-secondary/50 border-muted text-sm flex-1" onKeyDown={(e) => e.key === "Enter" && handleUrlUpload()} />
-            </div>
-          </div>
-        ) : (
-          <>
-            <div onClick={() => !uploading && fileRef.current?.click()} className="py-6 flex flex-col items-center justify-center cursor-pointer">
-              <Music className="h-8 w-8 text-muted-foreground mb-2" />
-              <p className="text-sm text-muted-foreground text-center">
-                {selectedFiles.length > 0 ? `${selectedFiles.length} arquivo(s) selecionado(s)` : isDragging ? "Solte os arquivos aqui..." : "Add arquivos ou link"}
-              </p>
-              <input ref={fileRef} type="file" accept="audio/*" multiple onChange={handleFileChange} className="hidden" />
-            </div>
-
-            {selectedFiles.length > 0 && !uploading && (
-              <div className="mt-2 flex items-center justify-between bg-secondary/30 rounded-lg p-3">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-primary shrink-0" />
-                  <span className="text-sm font-medium text-primary-foreground">{selectedFiles.length} arquivo(s) prontos</span>
-                </div>
-                <button onClick={resetState} className="text-muted-foreground hover:text-destructive transition-colors"><X className="h-4 w-4" /></button>
+        {/* Enviar para Playlist — Popover (portal, nunca vaza) */}
+        <div className="flex flex-col gap-1">
+          <Label className="text-xs text-muted-foreground">Enviar para Playlist</Label>
+          <Popover open={playlistPopoverOpen} onOpenChange={(open) => {
+            setPlaylistPopoverOpen(open);
+            if (open) { loadPlaylists(); setPlaylistSearch(""); }
+          }}>
+            <PopoverTrigger asChild>
+              <button type="button" title="Selecionar playlist"
+                className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-secondary/50 px-3 text-sm hover:border-primary/50 transition-colors">
+                <span className={selectedPlaylistName ? "text-foreground truncate" : "text-muted-foreground"}>
+                  {selectedPlaylistName || "Selecionar playlist..."}
+                </span>
+                <ChevronDown className="h-4 w-4 opacity-50 shrink-0 ml-2" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="p-0 w-[var(--radix-popover-trigger-width)]" align="start" side="top" sideOffset={4}>
+              <div className="p-2 border-b border-muted/30">
+                <Input
+                  value={playlistSearch}
+                  onChange={(e) => setPlaylistSearch(e.target.value)}
+                  placeholder="Buscar playlist..."
+                  className="h-8 text-sm bg-secondary/50 border-muted"
+                  autoFocus
+                />
               </div>
-            )}
-
-            {uploading && uploadProgress.total > 0 && (
-              <div className="mt-2 space-y-2">
-                <Progress value={progressPercent} className="h-2" />
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>{uploadProgress.done}/{uploadProgress.total} processados</span>
-                  <div className="flex gap-3">
-                    {uploadProgress.skipped > 0 && <span className="text-primary">⏭️ {uploadProgress.skipped} duplicatas</span>}
-                    {uploadProgress.errors > 0 && <span className="text-destructive">❌ {uploadProgress.errors} erros</span>}
-                  </div>
-                </div>
+              <div className="max-h-[180px] overflow-y-auto scrollbar-none">
+                {filteredPlaylists.length > 0 ? filteredPlaylists.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedPlaylistId(p.id);
+                      setPlaylistName(p.name);
+                      if (p.cover_url) setCoverPreview(p.cover_url);
+                      setPlaylistPopoverOpen(false);
+                    }}
+                    className={`w-full text-left px-3 py-2 text-sm hover:bg-accent transition-colors truncate ${selectedPlaylistId === p.id ? "bg-accent font-medium" : ""}`}
+                  >
+                    {p.name}
+                  </button>
+                )) : (
+                  <p className="text-sm text-muted-foreground text-center py-4">
+                    {isAdmin ? "Nenhuma playlist encontrada" : "Você só pode enviar músicas para playlists que criou ou importou"}
+                  </p>
+                )}
               </div>
-            )}
-          </>
-        )}
-
-        <div className="mt-3 flex justify-center">
-          <button type="button" onClick={() => { setTab(tab === "upload" ? "link" : "upload"); resetState(); }}
-            className="flex items-center gap-2 text-xs text-muted-foreground hover:text-primary transition-colors px-3 py-1.5 rounded-md bg-secondary/30 hover:bg-secondary/50">
-            {tab === "upload" ? (<><LinkIcon className="h-3.5 w-3.5" /> Usar link direto</>) : (<><Music className="h-3.5 w-3.5" /> Enviar arquivos</>)}
-          </button>
+            </PopoverContent>
+          </Popover>
         </div>
+
+        {!isPlaylistValid && (
+          <p className="text-xs text-muted-foreground/60 text-center">Selecione uma playlist ou preencha capa, nome e gênero</p>
+        )}
       </div>
 
-      {offlineEnabled && (
-        <p className="text-xs text-primary flex items-center gap-1">
-          ✅ Cache offline ativado — o áudio será salvo no navegador para uso sem internet.
-        </p>
-      )}
-
-      {!isPlaylistValid && (
-        <p className="text-[10px] text-muted-foreground/60 text-center">Preencha capa, nome e gênero para enviar</p>
-      )}
-
-      <Button
-        onClick={tab === "upload" ? handleBatchUpload : handleUrlUpload}
-        disabled={uploading || !isPlaylistValid || (tab === "upload" ? selectedFiles.length === 0 : !directUrl.trim())}
-        className="w-full font-semibold bg-primary text-primary-foreground hover:bg-primary hover:text-white hover:[text-shadow:0_0_8px_rgba(255,255,255,0.9)] active:bg-primary focus:bg-primary transition-all"
-      >
-        {uploading ? (
-          <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Enviando {uploadProgress.done}/{uploadProgress.total}...</>
-        ) : (
-          <><Upload className="h-4 w-4 mr-2" /> Enviar {tab === "upload" && selectedFiles.length > 1 ? `${selectedFiles.length} Músicas` : "Música"}</>
-        )}
-      </Button>
+      {/* Botão fixo no fundo */}
+      <div className="shrink-0 pt-3">
+        <Button
+          type="button"
+          onClick={tab === "upload" ? handleBatchUpload : handleUrlUpload}
+          disabled={uploading || !isPlaylistValid || (tab === "upload" ? selectedFiles.length === 0 : !directUrl.trim())}
+          className="w-full font-semibold bg-primary text-primary-foreground hover:bg-primary hover:text-white hover:[text-shadow:0_0_8px_rgba(255,255,255,0.9)] active:bg-primary focus:bg-primary transition-all h-10"
+        >
+          {uploading ? (
+            <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Enviando {uploadProgress.done}/{uploadProgress.total}...</>
+          ) : (
+            <><Upload className="h-4 w-4 mr-2" /> Enviar {tab === "upload" && selectedFiles.length > 1 ? `${selectedFiles.length} Músicas` : "Música"}</>
+          )}
+        </Button>
+      </div>
 
       {createdPlaylistId && (
         <PlaylistScheduleDialog

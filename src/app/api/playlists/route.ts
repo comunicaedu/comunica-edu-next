@@ -1,119 +1,114 @@
 import { NextRequest, NextResponse } from "next/server";
-import { writeFile, readFile, mkdir } from "fs/promises";
-import path from "path";
-import { createClient } from "@supabase/supabase-js";
+import { resolveApiUser, effectiveUserId } from "@/lib/api-auth";
 
-const DATA_FILE = path.join(process.cwd(), "public", "data", "playlists.json");
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+export async function GET(req: NextRequest) {
+  const user = await resolveApiUser(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-export interface PlaylistRecord {
-  id: string;
-  name: string;
-  description: string | null;
-  cover_url: string | null;
-  is_public: boolean;
-  is_global: boolean;
-  created_by: string | null;
-  youtube_playlist_id: string | null;
-  created_at: string;
-}
+  const uid = effectiveUserId(user, req.nextUrl.searchParams.get("user_id"));
 
-async function fetchAllFromSupabase(table: string, sb: any): Promise<any[]> {
-  const all: any[] = [];
-  const PAGE = 1000;
-  let from = 0;
-  while (true) {
-    const { data, error } = await sb.from(table).select("*").range(from, from + PAGE - 1);
-    if (error || !data || data.length === 0) break;
-    all.push(...data);
-    if (data.length < PAGE) break;
-    from += PAGE;
+  let query = user.db.from("playlists").select("*").order("created_at", { ascending: false });
+
+  // Admin olhando a si mesmo → vê tudo. Cliente (ou admin impersonando) → próprias + não-privadas.
+  // is_public pode ser true ou NULL (default = público). Só is_public=false é privada.
+  if (!user.isAdmin || uid !== user.userId) {
+    query = query.or(`created_by.eq.${uid},is_public.neq.false`);
   }
-  return all;
-}
 
-async function migrateFromSupabase(): Promise<PlaylistRecord[]> {
-  try {
-    const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
-    const data = await fetchAllFromSupabase("playlists", sb);
-    if (!data || data.length === 0) return [];
-    const playlists: PlaylistRecord[] = data.map((p: any) => ({
-      id: p.id,
-      name: p.name,
-      description: p.description ?? null,
-      cover_url: p.cover_url ?? null,
-      is_public: p.is_public ?? true,
-      is_global: p.is_global ?? false,
-      created_by: p.created_by ?? null,
-      youtube_playlist_id: p.youtube_playlist_id ?? null,
-      created_at: p.created_at,
-    }));
-    await mkdir(path.dirname(DATA_FILE), { recursive: true });
-    await writeFile(DATA_FILE, JSON.stringify(playlists, null, 2), "utf-8");
-    return playlists;
-  } catch {
-    return [];
-  }
-}
+  const { data, error } = await query;
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-async function readPlaylists(): Promise<PlaylistRecord[]> {
-  try {
-    const raw = await readFile(DATA_FILE, "utf-8");
-    const playlists = JSON.parse(raw) as PlaylistRecord[];
-    if (playlists.length > 0) return playlists;
-  } catch {}
-  return migrateFromSupabase();
-}
+  // Filtra playlists que este usuário ocultou
+  const { data: hiddenRows } = await user.db
+    .from("user_hidden_items")
+    .select("item_id")
+    .eq("user_id", uid)
+    .eq("item_type", "playlist");
+  const hiddenIds = new Set((hiddenRows ?? []).map((r: any) => r.item_id));
 
-async function writePlaylists(playlists: PlaylistRecord[]): Promise<void> {
-  await mkdir(path.dirname(DATA_FILE), { recursive: true });
-  await writeFile(DATA_FILE, JSON.stringify(playlists, null, 2), "utf-8");
-}
-
-export async function GET() {
-  const playlists = await readPlaylists();
+  const playlists = (data ?? []).filter((p: any) => !hiddenIds.has(p.id));
   return NextResponse.json({ playlists });
 }
 
 export async function POST(req: NextRequest) {
+  const user = await resolveApiUser(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const body = await req.json();
-    const { name, description, is_public, cover_url, created_by, is_global, youtube_playlist_id } = body;
+    const { name, description, is_public, cover_url, is_global, youtube_playlist_id } = body;
 
     if (!name) return NextResponse.json({ error: "Nome obrigatório" }, { status: 400 });
 
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const playlist: PlaylistRecord = {
-      id,
-      name,
-      description: description || null,
-      cover_url: cover_url || null,
-      is_public: is_public ?? true,
-      is_global: is_global ?? false,
-      created_by: created_by || null,
-      youtube_playlist_id: youtube_playlist_id || null,
-      created_at: new Date().toISOString(),
-    };
+    // Bloqueia duplicata por (created_by, lower(name))
+    const { data: existingPl } = await user.db
+      .from("playlists")
+      .select("id, name")
+      .eq("created_by", user.userId)
+      .ilike("name", name)
+      .maybeSingle();
+    if (existingPl) {
+      return NextResponse.json(
+        { error: `Já existe uma playlist com o nome "${existingPl.name}" na sua biblioteca.`, duplicate: true, existing: existingPl },
+        { status: 409 }
+      );
+    }
 
-    const playlists = await readPlaylists();
-    playlists.unshift(playlist);
-    await writePlaylists(playlists);
+    const fullRow: any = { name, created_by: user.userId };
+    if (cover_url           !== undefined) fullRow.cover_url           = cover_url           || null;
+    if (is_public           !== undefined) fullRow.is_public           = is_public           ?? true;
+    if (youtube_playlist_id !== undefined) fullRow.youtube_playlist_id = youtube_playlist_id || null;
 
-    return NextResponse.json({ playlist });
+    const { data, error } = await user.db
+      .from("playlists")
+      .insert(fullRow)
+      .select()
+      .single();
+
+    // Coluna inexistente → tenta só com nome + created_by
+    if (error?.code === "PGRST204" || error?.message?.includes("column")) {
+      const { data: data2, error: error2 } = await user.db
+        .from("playlists")
+        .insert({ name, created_by: user.userId })
+        .select()
+        .single();
+      if (error2) return NextResponse.json({ error: error2.message }, { status: 500 });
+      return NextResponse.json({ playlist: data2 });
+    }
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ playlist: data });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message ?? "Erro interno" }, { status: 500 });
   }
 }
 
 export async function PATCH(req: NextRequest) {
+  const user = await resolveApiUser(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const body = await req.json();
     const { id, ...patch } = body;
-    const playlists = await readPlaylists();
-    const pl = playlists.find((p) => p.id === id);
-    if (pl) Object.assign(pl, patch);
-    await writePlaylists(playlists);
+    if (!id) return NextResponse.json({ error: "id obrigatório" }, { status: 400 });
+
+    // Verifica ownership
+    if (!user.isAdmin) {
+      const { data: playlist } = await user.db
+        .from("playlists")
+        .select("created_by")
+        .eq("id", id)
+        .single();
+      if (!playlist || playlist.created_by !== user.userId) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
+    }
+
+    // Nunca deixar o client trocar o created_by
+    delete patch.created_by;
+
+    const { error } = await user.db.from("playlists").update(patch).eq("id", id);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message ?? "Erro interno" }, { status: 500 });
@@ -121,11 +116,35 @@ export async function PATCH(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
+  const user = await resolveApiUser(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const { id } = await req.json();
-    const playlists = await readPlaylists();
-    await writePlaylists(playlists.filter((p) => p.id !== id));
-    return NextResponse.json({ ok: true });
+    if (!id) return NextResponse.json({ error: "id obrigatório" }, { status: 400 });
+
+    const { data: playlist } = await user.db
+      .from("playlists")
+      .select("created_by")
+      .eq("id", id)
+      .single();
+    if (!playlist) return NextResponse.json({ error: "Playlist não encontrada" }, { status: 404 });
+
+    // Regra: SÓ admin deleta do banco. Cliente (mesmo dono) sempre soft-hide.
+    if (user.isAdmin) {
+      const { error } = await user.db.from("playlists").delete().eq("id", id);
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ ok: true, action: "deleted" });
+    }
+
+    const { error } = await user.db
+      .from("user_hidden_items")
+      .upsert(
+        { user_id: user.userId, item_type: "playlist", item_id: id },
+        { onConflict: "user_id,item_type,item_id" }
+      );
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, action: "hidden" });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message ?? "Erro interno" }, { status: 500 });
   }

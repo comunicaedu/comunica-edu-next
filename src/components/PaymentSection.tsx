@@ -27,6 +27,7 @@ interface PaymentSectionProps {
   disabled?: boolean;
   onValidate?: () => boolean;
   dueDay: string;
+  logoUrl?: string | null;
 }
 
 const formatCardNumber = (value: string) => {
@@ -87,7 +88,7 @@ const getSelectedPlanInfo = () => {
   return { serviceName: "o serviço", planName: "", value: 150 };
 };
 
-const PaymentSection = ({ customerData, onPaymentConfirmed, disabled, onValidate, dueDay }: PaymentSectionProps) => {
+const PaymentSection = ({ customerData, onPaymentConfirmed, disabled, onValidate, dueDay, logoUrl }: PaymentSectionProps) => {
   const [method, setMethod] = useState<PaymentMethod>(null);
   const [loading, setLoading] = useState(false);
   const [paymentId, setPaymentId] = useState<string | null>(null);
@@ -175,6 +176,8 @@ const PaymentSection = ({ customerData, onPaymentConfirmed, disabled, onValidate
       if (method === "cartao" || method === "trial") {
         body.cardData = { number: card.number, name: card.name, expiry: card.expiry, cvv: card.cvv };
       }
+
+      if (logoUrl) body.avatar_url = logoUrl;
 
       const { data, error } = await supabase.functions.invoke("create-asaas-payment", { body });
 

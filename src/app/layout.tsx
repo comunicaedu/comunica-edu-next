@@ -60,10 +60,32 @@ export default function RootLayout({
           <BackgroundProvider>
             {children}
             <Toaster
-              position="top-right"
-              richColors
-              closeButton
-              toastOptions={{ duration: 4000 }}
+              position="bottom-right"
+              offset={24}
+              gap={8}
+              toastOptions={{
+                duration: 4000,
+                classNames: {
+                  toast: [
+                    "!flex !items-center !gap-2",
+                    "!rounded-lg !border !shadow-lg",
+                    "!px-3 !py-2 !min-h-0",
+                    "!bg-[#1c2130]/95 !backdrop-blur-md",
+                    "!border-l-2 !border-l-[hsl(36,100%,50%)] !border-white/10",
+                    "!text-[hsl(220,14%,92%)]",
+                    "!text-xs !font-normal",
+                    "!max-w-[260px]",
+                  ].join(" "),
+                  title: "!text-xs !font-semibold !leading-tight",
+                  description: "!text-[11px] !text-[hsl(218,11%,62%)] !leading-snug !mt-0",
+                  icon: "!shrink-0 !text-[hsl(36,100%,50%)] [&_svg]:!h-3.5 [&_svg]:!w-3.5",
+                  closeButton: "!top-2 !right-2 !text-white/30 hover:!text-white/70",
+                  error:   "!border-l-[hsl(36,100%,50%)] [&_[data-icon]]:!text-[hsl(36,100%,50%)]",
+                  success: "!border-l-[hsl(36,100%,50%)] [&_[data-icon]]:!text-[hsl(36,100%,50%)]",
+                  info:    "!border-l-[hsl(36,100%,50%)] [&_[data-icon]]:!text-[hsl(36,100%,50%)]",
+                  warning: "!border-l-[hsl(36,100%,50%)] [&_[data-icon]]:!text-[hsl(36,100%,50%)]",
+                },
+              }}
             />
           </BackgroundProvider>
         </ThemeProvider>

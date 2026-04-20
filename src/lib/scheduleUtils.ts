@@ -1,10 +1,12 @@
 export interface ScheduleWindow {
   id: string;
   playlist_id: string;
+  user_id?: string | null;
   start_time: string;
   end_time: string;
   days_of_week: number[];
-  is_active: boolean;
+  is_active?: boolean;
+  active?: boolean;
   updated_at?: string;
   start_date?: string | null;
   end_date?: string | null;
@@ -42,7 +44,9 @@ export const formatScheduleRange = (startTime: string, endTime: string): string 
 };
 
 export const isScheduleActiveAt = (schedule: ScheduleWindow, now: Date): boolean => {
-  if (!schedule.is_active || !schedule.days_of_week?.length) return false;
+  // Se nenhum campo active/is_active existir, trata como ativo (presença da linha = agendado)
+  const isActive = schedule.is_active ?? schedule.active ?? true;
+  if (!isActive || !schedule.days_of_week?.length) return false;
 
   // Check date range if start_date/end_date are set
   if (schedule.start_date || schedule.end_date) {

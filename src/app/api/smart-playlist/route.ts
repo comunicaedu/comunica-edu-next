@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { writeFile, readFile, mkdir } from "fs/promises";
 import path from "path";
+import { resolveApiUser, effectiveUserId } from "@/lib/api-auth";
 
 const DATA_DIR = path.join(process.cwd(), "public", "data");
 const FAV_FILE = path.join(DATA_DIR, "user-favorites.json");
@@ -27,8 +28,10 @@ async function writeJson(file: string, data: any) {
 // GET /api/smart-playlist?user_id=xxx
 // Verifica se o usuário tem favoritos suficientes e gera/renova a playlist inteligente
 export async function GET(req: NextRequest) {
-  const userId = req.nextUrl.searchParams.get("user_id");
-  if (!userId) return NextResponse.json({ playlist: null });
+  const user = await resolveApiUser(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const userId = effectiveUserId(user, req.nextUrl.searchParams.get("user_id"));
 
   const favsStore: Record<string, FavEntry[]> = (await readJson(FAV_FILE)) ?? {};
   const userFavs: FavEntry[] = favsStore[userId] ?? [];

@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Music, Pencil, Trash2, Loader2, Search, FolderInput, Play, Pause, ListMusic, Tag, Globe, Lock, Eye } from "lucide-react";
+import { Music, Pencil, Trash2, Loader2, Search, FolderInput, Play, Pause, ListMusic, Tag, Globe, Lock } from "lucide-react";
 import AdminMiniTransport from "./AdminMiniTransport";
 import { Input } from "@/components/ui/input";
 import { supabase } from "@/lib/supabase/client";
+import { authedFetch } from "@/lib/authedFetch";
 import { toast } from "sonner";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -171,15 +172,31 @@ const UserPlaylistsCuration = () => {
         if (g) genreMap[r.playlist_id].push(g);
       });
 
-      // Get owner profiles
+      // Get owner profiles via list-clients API (uses service_role, bypasses RLS)
       const ownerIds = [...new Set(items.map(p => p.created_by!))];
       const profileMap: Record<string, { nome: string | null; email: string | null }> = {};
       if (ownerIds.length > 0) {
-        const { data: profiles } = await supabase
-          .from("profiles")
-          .select("user_id, nome, email")
-          .in("user_id", ownerIds);
-        (profiles ?? []).forEach(p => { profileMap[p.user_id] = { nome: p.nome, email: p.email }; });
+        try {
+          const res = await authedFetch("/api/admin/list-clients", { method: "POST", headers: { "Content-Type": "application/json" } });
+          const data = await res.json();
+          const clients: { user_id: string; nome: string | null; email: string | null; username: string | null }[] = data.clients ?? [];
+          const adminRoles: { user_id: string }[] = (data.roles ?? []).filter((r: any) => r.role === "admin");
+          const adminIds = new Set(adminRoles.map(r => r.user_id));
+          clients.forEach(c => {
+            if (ownerIds.includes(c.user_id)) {
+              profileMap[c.user_id] = {
+                nome: c.nome || c.username || (adminIds.has(c.user_id) ? "Administrador" : null),
+                email: c.email,
+              };
+            }
+          });
+        } catch {}
+        // Garante que TODOS os ownerIds tenham entrada
+        ownerIds.forEach(id => {
+          if (!profileMap[id]) {
+            profileMap[id] = { nome: null, email: null };
+          }
+        });
       }
 
       const result: UserPlaylist[] = items.map(p => {
@@ -503,10 +520,7 @@ const UserPlaylistsCuration = () => {
                   <TableCell><span className="font-medium">{p.name}</span></TableCell>
                   <TableCell><span className="text-xs text-muted-foreground">{p.genre || "—"}</span></TableCell>
                   <TableCell>
-                    <div className="text-xs">
-                      <p className="font-medium">{p.owner_name || "Sem nome"}</p>
-                      <p className="text-muted-foreground">{p.owner_email || ""}</p>
-                    </div>
+                    <span className="text-xs font-medium">{p.owner_name || "Sem nome"}</span>
                   </TableCell>
                   <TableCell>{p.song_count}</TableCell>
                   <TableCell>
@@ -539,14 +553,6 @@ const UserPlaylistsCuration = () => {
                           {actionLoading === p.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Globe className="h-4 w-4" />}
                         </button>
                       )}
-                      <button
-                        onClick={() => openDetail(p)}
-                        className="p-1.5 rounded text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
-                        style={amberBorder}
-                        title="Ver músicas"
-                      >
-                        <Eye className="h-4 w-4" />
-                      </button>
                       <button
                         onClick={() => handleDeletePlaylist(p)}
                         disabled={actionLoading === p.id}
@@ -583,7 +589,7 @@ const UserPlaylistsCuration = () => {
             </DialogTitle>
             {selectedPlaylist && (
               <p className="text-xs text-muted-foreground mt-1">
-                Criador: {selectedPlaylist.owner_name || "Sem nome"} ({selectedPlaylist.owner_email || "—"})
+                Criador: {selectedPlaylist.owner_name || "Sem nome"}
                 {selectedPlaylist.genre && <> · Gênero: {selectedPlaylist.genre}</>}
               </p>
             )}

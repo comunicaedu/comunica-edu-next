@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import EduLogoIcon from "@/components/player/EduLogoIcon";
+import { authedFetch } from "@/lib/authedFetch";
 
 interface Song {
   id: string;
@@ -35,7 +36,7 @@ const AllSongsManager = ({ onClose }: AllSongsManagerProps) => {
   const fetchSongs = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/songs");
+      const res = await authedFetch("/api/songs");
       const data = await res.json();
       setSongs(data.songs ?? []);
     } catch {
@@ -93,7 +94,7 @@ const AllSongsManager = ({ onClose }: AllSongsManagerProps) => {
     if (!editingId || !editTitle.trim()) return;
     setSaving(true);
     try {
-      const res = await fetch("/api/songs", {
+      const res = await authedFetch("/api/songs", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: editingId, title: editTitle.trim(), artist: editArtist.trim() || null }),
@@ -117,13 +118,13 @@ const AllSongsManager = ({ onClose }: AllSongsManagerProps) => {
     setDeleting(song.id);
     try {
       // Remove from playlist_songs first
-      await fetch("/api/playlist-songs", {
+      await authedFetch("/api/playlist-songs", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ song_id: song.id }),
       });
       // Remove song (API handles file deletion)
-      const res = await fetch("/api/songs", {
+      const res = await authedFetch("/api/songs", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: song.id }),

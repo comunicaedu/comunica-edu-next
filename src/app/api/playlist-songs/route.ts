@@ -1,160 +1,235 @@
 import { NextRequest, NextResponse } from "next/server";
-import { writeFile, readFile, mkdir } from "fs/promises";
-import path from "path";
-import { createClient } from "@supabase/supabase-js";
+import { resolveApiUser, effectiveUserId } from "@/lib/api-auth";
 
-const DATA_FILE = path.join(process.cwd(), "public", "data", "playlist-songs.json");
-const SONGS_FILE = path.join(process.cwd(), "public", "data", "songs.json");
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const SB_STORAGE_BASE = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/audio/`;
 
-interface PlaylistSongRecord {
-  id: string;
-  playlist_id: string;
-  song_id: string;
-  position: number;
-  created_at: string;
+function resolveFilePath(fp: string): string {
+  if (!fp) return fp;
+  if (
+    fp.startsWith("/uploads/") ||
+    fp.startsWith("youtube:") ||
+    fp.startsWith("imported/") ||
+    fp.startsWith("direct:") ||
+    fp.startsWith("http")
+  ) return fp;
+  return SB_STORAGE_BASE + fp;
 }
 
-interface SongRecord {
-  id: string;
-  title: string;
-  artist: string | null;
-  genre: string | null;
-  file_path: string;
-  cover_url: string | null;
-  created_at: string;
-  youtube_video_id: string | null;
-  duration: number | null;
-}
-
-async function fetchAllFromSupabase(table: string, sb: any): Promise<any[]> {
-  const all: any[] = [];
-  const PAGE = 1000;
-  let from = 0;
-  while (true) {
-    const { data, error } = await sb.from(table).select("*").range(from, from + PAGE - 1);
-    if (error || !data || data.length === 0) break;
-    all.push(...data);
-    if (data.length < PAGE) break;
-    from += PAGE;
-  }
-  return all;
-}
-
-async function migrateFromSupabase(): Promise<PlaylistSongRecord[]> {
-  try {
-    const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
-    const data = await fetchAllFromSupabase("playlist_songs", sb);
-    if (!data || data.length === 0) return [];
-    const joins: PlaylistSongRecord[] = data.map((j: any) => ({
-      id: j.id,
-      playlist_id: j.playlist_id,
-      song_id: j.song_id,
-      position: j.position ?? 0,
-      created_at: j.created_at ?? new Date().toISOString(),
-    }));
-    await mkdir(path.dirname(DATA_FILE), { recursive: true });
-    await writeFile(DATA_FILE, JSON.stringify(joins, null, 2), "utf-8");
-    return joins;
-  } catch {
-    return [];
-  }
-}
-
-async function readJoins(): Promise<PlaylistSongRecord[]> {
-  try {
-    const data = JSON.parse(await readFile(DATA_FILE, "utf-8")) as PlaylistSongRecord[];
-    if (data.length > 0) return data;
-  } catch {}
-  return migrateFromSupabase();
-}
-
-async function writeJoins(joins: PlaylistSongRecord[]): Promise<void> {
-  await mkdir(path.dirname(DATA_FILE), { recursive: true });
-  await writeFile(DATA_FILE, JSON.stringify(joins, null, 2), "utf-8");
-}
-
-async function readSongs(): Promise<SongRecord[]> {
-  try {
-    return JSON.parse(await readFile(SONGS_FILE, "utf-8")) as SongRecord[];
-  } catch {
-    return [];
-  }
+/** Verifica acesso à playlist.
+ *  mode='read'  → admin, dono OU playlist pública
+ *  mode='write' → apenas admin ou dono (editar/adicionar/remover músicas da playlist)
+ */
+async function verifyPlaylistAccess(
+  db: any,
+  playlistId: string,
+  userId: string,
+  isAdmin: boolean,
+  mode: "read" | "write" = "write"
+): Promise<boolean> {
+  if (isAdmin) return true;
+  const { data } = await db
+    .from("playlists")
+    .select("created_by, is_public")
+    .eq("id", playlistId)
+    .single();
+  if (!data) return false;
+  if (data.created_by === userId) return true;
+  // is_public pode ser true, false ou NULL — NULL trata como público (default)
+  if (mode === "read" && data.is_public !== false) return true;
+  return false;
 }
 
 export async function GET(req: NextRequest) {
+  const user = await resolveApiUser(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const playlistId = req.nextUrl.searchParams.get("playlist_id");
-  const joins = await readJoins();
+  const uid = effectiveUserId(user, req.nextUrl.searchParams.get("user_id"));
 
-  if (!playlistId) return NextResponse.json({ joins });
+  if (!playlistId) {
+    // Sem playlist_id: retorna joins apenas das playlists do usuário
+    // Admin sem user_id vê tudo
+    if (user.isAdmin && uid === user.userId && !req.nextUrl.searchParams.get("user_id")) {
+      const { data, error } = await user.db
+        .from("playlist_songs")
+        .select("*")
+        .order("position", { ascending: true });
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ joins: data ?? [] });
+    }
 
-  const songs = await readSongs();
-  const songMap = new Map(songs.map((s) => [s.id, s]));
+    // Busca IDs das playlists visíveis ao usuário: próprias + não-privadas (NULL = público)
+    const { data: userPlaylists } = await user.db
+      .from("playlists")
+      .select("id")
+      .or(`created_by.eq.${uid},is_public.neq.false`);
+    const pIds = (userPlaylists ?? []).map((p: any) => p.id);
 
-  const result = joins
-    .filter((j) => j.playlist_id === playlistId)
-    .sort((a, b) => a.position - b.position)
-    .map((j) => {
-      const song = songMap.get(j.song_id);
-      if (!song) return null;
-      return { ...song, playlist_song_id: j.id };
+    if (pIds.length === 0) return NextResponse.json({ joins: [] });
+
+    const { data, error } = await user.db
+      .from("playlist_songs")
+      .select("*")
+      .in("playlist_id", pIds)
+      .order("position", { ascending: true });
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ joins: data ?? [] });
+  }
+
+  // Com playlist_id: GET permite ler playlists públicas de outros
+  if (!await verifyPlaylistAccess(user.db, playlistId, user.userId, user.isAdmin, "read")) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  // Busca músicas da playlist com join
+  let data: any[] | null = null;
+  let error: any = null;
+
+  const fullSelect = await user.db
+    .from("playlist_songs")
+    .select(`id, position, song_id, songs (id, title, artist, genre, file_path, cover_url, created_at, youtube_video_id, duration)`)
+    .eq("playlist_id", playlistId)
+    .order("position", { ascending: true });
+
+  if (fullSelect.error) {
+    const baseSelect = await user.db
+      .from("playlist_songs")
+      .select(`id, position, song_id, songs (id, title, file_path, genre, created_at)`)
+      .eq("playlist_id", playlistId)
+      .order("position", { ascending: true });
+    data = baseSelect.data;
+    error = baseSelect.error;
+  } else {
+    data = fullSelect.data;
+  }
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  const songs = (data ?? [])
+    .map((row: any) => {
+      const s = row.songs;
+      if (!s) return null;
+      const fp = resolveFilePath(s.file_path ?? "");
+      const ytId = s.youtube_video_id ?? (s.file_path?.startsWith("youtube:") ? s.file_path.replace("youtube:", "") : null);
+      return {
+        id:               s.id,
+        title:            s.title,
+        artist:           s.artist ?? null,
+        genre:            s.genre ?? null,
+        file_path:        fp,
+        cover_url:        s.cover_url ?? null,
+        created_at:       s.created_at,
+        youtube_video_id: ytId,
+        duration:         s.duration ?? null,
+        position:         row.position,
+        playlist_song_id: row.id,
+      };
     })
     .filter(Boolean);
 
-  return NextResponse.json({ songs: result });
+  return NextResponse.json({ songs });
 }
 
 export async function POST(req: NextRequest) {
+  const user = await resolveApiUser(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const { playlist_id, song_ids } = await req.json();
     if (!playlist_id || !Array.isArray(song_ids)) {
       return NextResponse.json({ error: "playlist_id e song_ids obrigatórios" }, { status: 400 });
     }
 
-    const joins = await readJoins();
-    const existing = joins.filter((j) => j.playlist_id === playlist_id);
-    const existingIds = new Set(existing.map((j) => j.song_id));
-    let maxPos = existing.reduce((m, j) => Math.max(m, j.position), -1);
-
-    const newJoins: PlaylistSongRecord[] = [];
-    for (const song_id of song_ids) {
-      if (existingIds.has(song_id)) continue;
-      maxPos++;
-      newJoins.push({
-        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        playlist_id,
-        song_id,
-        position: maxPos,
-        created_at: new Date().toISOString(),
-      });
+    // POST (adicionar música) → só dono ou admin
+    if (!await verifyPlaylistAccess(user.db, playlist_id, user.userId, user.isAdmin, "write")) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    await writeJoins([...joins, ...newJoins]);
-    return NextResponse.json({ added: newJoins.length });
+    // Busca posição máxima atual
+    const { data: existing } = await user.db
+      .from("playlist_songs")
+      .select("song_id, position")
+      .eq("playlist_id", playlist_id);
+
+    const existingIds = new Set((existing ?? []).map((j: any) => j.song_id));
+    let maxPos = (existing ?? []).reduce((m: number, j: any) => Math.max(m, j.position ?? 0), -1);
+
+    const newRows = song_ids
+      .filter((sid: string) => !existingIds.has(sid))
+      .map((sid: string) => {
+        maxPos++;
+        return { playlist_id, song_id: sid, position: maxPos };
+      });
+
+    if (newRows.length === 0) return NextResponse.json({ added: 0 });
+
+    const { error } = await user.db.from("playlist_songs").insert(newRows);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+    return NextResponse.json({ added: newRows.length });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message ?? "Erro interno" }, { status: 500 });
   }
 }
 
 export async function DELETE(req: NextRequest) {
+  const user = await resolveApiUser(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const body = await req.json();
-    let joins = await readJoins();
 
-    if (body.id) {
-      joins = joins.filter((j) => j.id !== body.id);
-    } else if (body.playlist_id && body.song_id) {
-      joins = joins.filter(
-        (j) => !(j.playlist_id === body.playlist_id && j.song_id === body.song_id)
-      );
-    } else if (body.song_id) {
-      joins = joins.filter((j) => j.song_id !== body.song_id);
-    } else if (body.playlist_id) {
-      joins = joins.filter((j) => j.playlist_id !== body.playlist_id);
+    // Determina o playlist_id para verificar ownership
+    let playlistId: string | null = body.playlist_id ?? null;
+
+    // Se veio apenas id (do join), busca o playlist_id do registro
+    if (!playlistId && body.id) {
+      const { data: joinRow } = await user.db
+        .from("playlist_songs")
+        .select("playlist_id")
+        .eq("id", body.id)
+        .single();
+      playlistId = joinRow?.playlist_id ?? null;
     }
 
-    await writeJoins(joins);
+    // DELETE (remover música da playlist) → só dono da playlist ou admin
+    if (!playlistId && body.song_id) {
+      if (!user.isAdmin) {
+        const { data: joins } = await user.db
+          .from("playlist_songs")
+          .select("playlist_id")
+          .eq("song_id", body.song_id);
+        const pIds = [...new Set((joins ?? []).map((j: any) => j.playlist_id))];
+        for (const pid of pIds) {
+          if (!await verifyPlaylistAccess(user.db, pid as string, user.userId, false, "write")) {
+            return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+          }
+        }
+      }
+    } else if (playlistId) {
+      if (!await verifyPlaylistAccess(user.db, playlistId, user.userId, user.isAdmin, "write")) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
+    } else {
+      return NextResponse.json({ error: "Parâmetro inválido" }, { status: 400 });
+    }
+
+    let query = user.db.from("playlist_songs").delete();
+
+    if (body.id) {
+      query = query.eq("id", body.id);
+    } else if (body.playlist_id && body.song_id) {
+      query = query.eq("playlist_id", body.playlist_id).eq("song_id", body.song_id);
+    } else if (body.song_id) {
+      query = query.eq("song_id", body.song_id);
+    } else if (body.playlist_id) {
+      query = query.eq("playlist_id", body.playlist_id);
+    } else {
+      return NextResponse.json({ error: "Parâmetro inválido" }, { status: 400 });
+    }
+
+    const { error } = await query;
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message ?? "Erro interno" }, { status: 500 });

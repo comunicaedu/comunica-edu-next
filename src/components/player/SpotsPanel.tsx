@@ -2,24 +2,30 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
-  Mic, Upload, Play, Pause, Trash2, Search, Loader2,
-  Pencil, Check, X, Clock, Power, Star, Square, CheckSquare,
-  Volume2, Send, ListMusic, BarChart2, CalendarClock, BanIcon,
+  Mic, Upload, Play, Trash2, Search, Loader2,
+  Pencil, Power, Star, Key,
+  BanIcon, Newspaper, Lock,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Slider } from "@/components/ui/slider";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+} from "@/components/ui/dialog";
 import { supabase } from "@/lib/supabase/client";
 import { toast } from "sonner";
+import { useClientFeatures } from "@/hooks/useClientFeatures";
+import { useUserPreferences } from "@/hooks/useUserPreferences";
 import {
   getSpotSettings,
+  loadSpotSettings,
   saveSpotSettings,
   invalidateSpotsCache,
   type SpotSettings,
 } from "@/lib/spotIntercalate";
 import {
   loadSpotConfigs,
-  updateSpotConfig,
+  fetchSpotConfigs,
+  saveSpotConfig,
+  setCachedSpotConfigs,
   removeSpotConfig,
   type SpotConfigMap,
   type SpotConfig,
@@ -33,9 +39,14 @@ interface Spot {
   title: string;
   file_path: string;
   created_at: string;
+  owner_name?: string;   // preenchido só para admin
+  owner_id?: string;     // preenchido só para admin
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+interface Client {
+  id: string;
+  name: string;
+}
 
 // ── Priority stars ────────────────────────────────────────────────────────────
 
@@ -48,7 +59,7 @@ function PrioritySelector({ value, onChange }: { value: number; onChange: (v: nu
           type="button"
           aria-label={`Prioridade ${n}`}
           onClick={() => onChange(n)}
-          className={`transition-colors ${n <= value ? "text-primary" : "text-muted-foreground/25"} hover:text-primary`}
+          className={`w-6 h-6 flex items-center justify-center rounded transition-colors ${n <= value ? "text-primary" : "text-muted-foreground/25"} hover:text-primary hover:bg-primary/10`}
         >
           <Star className="h-4 w-4" fill={n <= value ? "currentColor" : "none"} />
         </button>
@@ -59,32 +70,53 @@ function PrioritySelector({ value, onChange }: { value: number; onChange: (v: nu
 
 // ── Spot row ──────────────────────────────────────────────────────────────────
 
-const INTERVAL_PRESETS = [1, 2, 3, 4, 5];
-
 interface SpotRowProps {
   spot: Spot;
   cfg: SpotConfig;
-  selected: boolean;
-  isPlaying: boolean;
-  previewProgress: number;
-  previewVolume: number;
-  onSelect: () => void;
-  onPlayPause: () => void;
-  onVolumeChange: (v: number) => void;
+  isSelected: boolean;
+  isPreviewing: boolean;
+  showOwner?: boolean;
+  onToggleSelect: () => void;
+  onPlaySpot: () => void;
   onDelete: () => void;
   onConfigChange: (patch: Partial<SpotConfig>) => void;
   onRename: (t: string) => void;
-  onSendToClient?: () => void;
 }
 
 function SpotRow({
-  spot, cfg, selected, isPlaying, previewProgress, previewVolume,
-  onSelect, onPlayPause, onVolumeChange, onDelete, onConfigChange, onRename, onSendToClient,
+  spot, cfg,
+  isSelected, isPreviewing, showOwner,
+  onToggleSelect,
+  onPlaySpot, onDelete, onConfigChange, onRename,
 }: SpotRowProps) {
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(spot.title);
-  const [schedStart, setSchedStart] = useState(cfg.scheduleStart ?? "");
-  const [schedEnd, setSchedEnd] = useState(cfg.scheduleEnd ?? "");
+
+  // Padrão getDerivedStateFromProps: mantém estado local sincronizado com cfg
+  // sem depender de useEffect (que pode não disparar quando cfg muda durante render)
+  const [schedDate, setSchedDate] = useState(cfg.scheduleStart?.split("T")[0] ?? "");
+  const [schedEndDate, setSchedEndDate] = useState(cfg.scheduleEnd?.split("T")[0] ?? "");
+  const [schedTime, setSchedTime] = useState(cfg.scheduleStart?.split("T")[1]?.slice(0, 5) ?? "");
+  const [schedEndTime, setSchedEndTime] = useState(cfg.scheduleEnd?.split("T")[1]?.slice(0, 5) ?? "");
+  const [prevCfgStart, setPrevCfgStart] = useState(cfg.scheduleStart);
+  const [prevCfgEnd, setPrevCfgEnd] = useState(cfg.scheduleEnd);
+  const [prevTitle, setPrevTitle] = useState(spot.title);
+
+  // Sync durante o render — garante que inputs refletem o cfg IMEDIATAMENTE
+  if (cfg.scheduleStart !== prevCfgStart) {
+    setPrevCfgStart(cfg.scheduleStart);
+    setSchedDate(cfg.scheduleStart?.split("T")[0] ?? "");
+    setSchedTime(cfg.scheduleStart?.split("T")[1]?.slice(0, 5) ?? "");
+  }
+  if (cfg.scheduleEnd !== prevCfgEnd) {
+    setPrevCfgEnd(cfg.scheduleEnd);
+    setSchedEndDate(cfg.scheduleEnd?.split("T")[0] ?? "");
+    setSchedEndTime(cfg.scheduleEnd?.split("T")[1]?.slice(0, 5) ?? "");
+  }
+  if (spot.title !== prevTitle && !editing) {
+    setPrevTitle(spot.title);
+    setEditTitle(spot.title);
+  }
 
   const commitRename = () => {
     const t = editTitle.trim();
@@ -92,225 +124,316 @@ function SpotRow({
     setEditing(false);
   };
 
+  // Spot está salvo com schedule no banco?
+  const isScheduledSaved = !!cfg.scheduleStart;
+
+  const handleSaveOrCancel = () => {
+    if (isScheduledSaved) {
+      // Clicar novamente = cancelar agendamento
+      setSchedDate(""); setSchedEndDate(""); setSchedTime(""); setSchedEndTime("");
+      onConfigChange({ scheduleStart: null, scheduleEnd: null });
+    } else {
+      // Só salva se a data de início for hoje ou no futuro
+      const today = new Date().toISOString().split("T")[0];
+      if (!schedDate || schedDate < today) return;
+      const start = `${schedDate}T${schedTime || "00:00"}`;
+      const end = schedEndDate ? `${schedEndDate}T${schedEndTime || "23:59"}` : null;
+      const patch: Partial<SpotConfig> = { scheduleStart: start, scheduleEnd: end };
+      patch.enabled = true; // ativa automaticamente ao programar
+      onConfigChange(patch);
+    }
+  };
 
   return (
-    <div className={`rounded-xl border transition-all ${cfg.enabled ? "bg-secondary/30 border-border/40" : "bg-secondary/10 border-border/20 opacity-60"} ${selected ? "ring-1 ring-primary/50" : ""}`}>
+    <div className={`rounded-xl border transition-colors ${cfg.enabled ? "bg-secondary/30 border-border/40" : "bg-secondary/10 border-border/20 opacity-60"}`}>
 
-      {/* ── Row 1: identity + actions ── */}
-      <div className="flex items-center gap-2 px-3 pt-3 pb-2">
-
-        {/* Checkbox */}
-        <button type="button" onClick={onSelect} aria-label="Selecionar" className="shrink-0 text-muted-foreground hover:text-primary transition-colors">
-          {selected ? <CheckSquare className="h-4 w-4 text-primary" /> : <Square className="h-4 w-4" />}
-        </button>
-
-        {/* Play / Pause */}
+      {/* ── Linha 1: Checkbox | Play | Nome + data | Renomear | Excluir ── */}
+      <div className="flex items-center gap-3 px-3 pt-3 pb-2">
+        <input
+          type="checkbox"
+          checked={isSelected}
+          onChange={onToggleSelect}
+          title="Selecionar para configuração em lote"
+          className="w-4 h-4 accent-primary cursor-pointer shrink-0"
+        />
         <button
           type="button"
-          aria-label={isPlaying ? "Pausar" : "Ouvir spot"}
-          onClick={onPlayPause}
-          className="w-9 h-9 rounded-full bg-primary/20 text-primary flex items-center justify-center hover:bg-primary/30 transition-colors shrink-0"
+          aria-label={isPreviewing ? "Pausar spot" : "Tocar spot no player"}
+          onClick={onPlaySpot}
+          className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors shrink-0 ${isPreviewing ? "bg-primary text-primary-foreground hover:bg-primary/80" : "bg-primary/20 text-primary hover:bg-primary/30"}`}
         >
-          {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
+          {isPreviewing
+            ? <span className="w-3.5 h-3.5 flex gap-[3px]"><span className="w-1 h-full bg-current rounded-sm"/><span className="w-1 h-full bg-current rounded-sm"/></span>
+            : <Play className="h-4 w-4 ml-0.5" />}
         </button>
 
-        {/* Title */}
         <div className="flex-1 min-w-0">
           {editing ? (
-            <div className="flex items-center gap-1">
-              <Input autoFocus value={editTitle}
-                onChange={(e) => setEditTitle(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") setEditing(false); }}
-                className="h-7 text-sm py-0 px-2 bg-secondary" />
-              <button type="button" title="Confirmar" aria-label="Confirmar renomeação" onClick={commitRename} className="text-green-400 p-1"><Check className="h-4 w-4" /></button>
-              <button type="button" title="Cancelar" aria-label="Cancelar renomeação" onClick={() => setEditing(false)} className="text-muted-foreground p-1"><X className="h-4 w-4" /></button>
-            </div>
+            <Input autoFocus value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={(e) => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") { setEditing(false); setEditTitle(spot.title); } }}
+              className="h-[1.375rem] text-sm py-0 px-2 bg-secondary w-full" />
           ) : (
-            <p className="text-sm font-medium truncate">{spot.title}</p>
+            <p className="text-sm font-semibold truncate leading-[1.375rem]">{spot.title}</p>
           )}
-          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-            <span className="text-[10px] text-muted-foreground">{new Date(spot.created_at).toLocaleDateString("pt-BR")}</span>
-            {!cfg.enabled && <span className="text-[10px] bg-red-500/20 text-red-400 rounded px-1.5 py-0.5">inativo</span>}
-            {cfg.interval && <span className="text-[10px] bg-blue-500/20 text-blue-400 rounded px-1.5 py-0.5">a cada {cfg.interval}</span>}
-            {cfg.scheduleStart && <span className="text-[10px] bg-primary/20 text-primary rounded px-1.5 py-0.5 font-medium">agendado</span>}
-            {cfg.priority > 1 && <span className="text-[10px] bg-amber-500/20 text-amber-400 rounded px-1.5 py-0.5">×{cfg.priority}</span>}
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <span className="text-xs text-muted-foreground">{new Date(spot.created_at).toLocaleDateString("pt-BR")}</span>
+            <span className={`text-[10px] rounded px-1.5 py-0.5 transition-opacity ${cfg.scheduleStart ? "bg-blue-500/20 text-blue-400 opacity-100" : "opacity-0 pointer-events-none select-none"}`}>agendado</span>
           </div>
         </div>
 
-        {/* Action buttons */}
-        <div className="flex items-center gap-0.5 shrink-0">
-          <button type="button" title="Renomear" onClick={() => { setEditTitle(spot.title); setEditing(true); }}
-            className="p-1.5 rounded-lg text-muted-foreground hover:text-primary transition-colors">
-            <Pencil className="h-4 w-4" />
-          </button>
-          <button type="button" title={cfg.enabled ? "Desativar" : "Ativar"} onClick={() => onConfigChange({ enabled: !cfg.enabled })}
-            className={`p-1.5 rounded-lg transition-colors ${cfg.enabled ? "text-green-400 hover:text-green-300" : "text-muted-foreground/40 hover:text-muted-foreground"}`}>
-            <Power className="h-4 w-4" />
-          </button>
-          {onSendToClient && (
-            <button type="button" title="Enviar para outro cliente" onClick={onSendToClient}
-              className="p-1.5 rounded-lg text-muted-foreground hover:text-primary transition-colors">
-              <Send className="h-4 w-4" />
-            </button>
-          )}
-          <button type="button" title="Excluir" onClick={onDelete}
-            className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive transition-colors">
-            <Trash2 className="h-4 w-4" />
-          </button>
-        </div>
+        <button type="button" title="Renomear"
+          onClick={() => { setEditTitle(spot.title); setEditing(true); }}
+          className="p-1.5 rounded-lg text-muted-foreground hover:text-primary transition-colors shrink-0">
+          <Pencil className="h-3.5 w-3.5" />
+        </button>
+
+        <button type="button" title="Excluir" onClick={onDelete}
+          className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive transition-colors shrink-0">
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
       </div>
 
-      {/* Preview progress bar */}
-      {isPlaying && (
-        <div className="mx-3 mb-1 h-1 bg-secondary rounded-full overflow-hidden">
-          <div className="h-full bg-primary rounded-full transition-all duration-500"
-            ref={(el) => { if (el) el.style.width = `${previewProgress * 100}%`; }} />
-        </div>
-      )}
+      {/* ── Linha 2: Dono | Prioridade | Agendamento + Toggle ── */}
+      <div className="flex items-center justify-between gap-2 px-3 py-2 border-t border-border/20">
 
-      {/* ── Row 2: controls always visible ── */}
-      <div className="px-3 pb-3 pt-1 grid grid-cols-1 sm:grid-cols-3 gap-3 border-t border-border/20 mt-1">
-
-        {/* Intervalo por spot */}
-        <div className="space-y-1.5">
-          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
-            <ListMusic className="h-3 w-3" /> A cada X músicas
-          </p>
-          <div className="flex gap-1">
-            {INTERVAL_PRESETS.map((n) => (
-              <button key={n} type="button"
-                onClick={() => onConfigChange({ interval: n })}
-                className={`text-[11px] w-8 h-7 rounded-lg transition-colors font-medium ${cfg.interval === n ? "bg-primary text-primary-foreground" : "bg-secondary/60 text-muted-foreground hover:bg-secondary"}`}>
-                {n}
-              </button>
-            ))}
-          </div>
+        {/* Dono do spot (onde ficavam os botões de intervalo individual) */}
+        <div className="flex items-center shrink-0 min-w-[72px]">
+          {showOwner && spot.owner_name && (
+            <span className="text-[10px] bg-primary/15 text-primary rounded px-1.5 py-0.5 font-medium truncate">{spot.owner_name}</span>
+          )}
         </div>
 
-        {/* Prioridade */}
-        <div className="space-y-1.5">
-          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
-            <BarChart2 className="h-3 w-3" /> Prioridade (máx 5×)
-          </p>
+        <div className="w-px h-4 bg-border/30 shrink-0" />
+
+        {/* quantas vezes a mais do que os outros? [★★★★★] */}
+        <div className="flex items-center gap-1 shrink-0">
+          <span className="text-[10px] text-muted-foreground whitespace-nowrap">Quantas vezes a mais do que os outros?</span>
           <PrioritySelector value={cfg.priority} onChange={(v) => {
             onConfigChange({ priority: v });
-            toast.success(v === 1 ? "Prioridade igual aos demais." : `Toca ${v}× mais por ciclo.`);
+            toast.success(v === 1 ? "Frequência igual aos demais." : `Toca ${v}× mais que os outros.`);
           }} />
         </div>
 
-        {/* Programação */}
-        <div className="space-y-1.5">
-          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
-            <CalendarClock className="h-3 w-3" /> Programação
-          </p>
-          <div className="space-y-1">
-            <div className="flex items-center gap-1">
-              <span className="text-[10px] text-muted-foreground w-7">Início</span>
-              <Input type="datetime-local" value={schedStart}
-                onChange={(e) => setSchedStart(e.target.value)}
-                className="h-7 text-[11px] bg-secondary px-1.5 flex-1" />
-            </div>
-            <div className="flex items-center gap-1">
-              <span className="text-[10px] text-muted-foreground w-7">Fim</span>
-              <Input type="datetime-local" value={schedEnd}
-                onChange={(e) => setSchedEnd(e.target.value)}
-                className="h-7 text-[11px] bg-secondary px-1.5 flex-1" />
-            </div>
-            <div className="flex gap-1">
-              <button type="button" onClick={() => {
-                onConfigChange({ scheduleStart: schedStart || null, scheduleEnd: schedEnd || null });
-                toast.success(schedStart ? "Programação salva." : "Programação removida.");
-              }} className="h-6 px-2 rounded bg-primary/20 text-primary text-[11px] hover:bg-primary/30 transition-colors">
-                Salvar
-              </button>
-              {(cfg.scheduleStart || cfg.scheduleEnd) && (
-                <button type="button" onClick={() => {
-                  setSchedStart(""); setSchedEnd("");
-                  onConfigChange({ scheduleStart: null, scheduleEnd: null });
-                  toast.success("Programação removida.");
-                }} className="h-6 px-2 rounded bg-destructive/20 text-destructive text-[11px] hover:bg-destructive/30 transition-colors">
-                  Limpar
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
+        <div className="w-px h-4 bg-border/30 shrink-0" />
 
+        {/* Programe do dia [data] até [data] [Salvar] [Ativo] */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="text-[10px] text-muted-foreground whitespace-nowrap">Programe do dia</span>
+          <input
+            type="date"
+            title="Data de início"
+            value={schedDate}
+            min={new Date().toISOString().split("T")[0]}
+            onChange={(e) => setSchedDate(e.target.value)}
+            className="h-6 w-[100px] shrink-0 text-[10px] px-1 rounded-md bg-secondary/70 border border-border/50 text-foreground focus:outline-none focus:ring-1 focus:ring-primary [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-80 [&::-webkit-calendar-picker-indicator]:[filter:invert(55%)_sepia(90%)_saturate(400%)_hue-rotate(5deg)_brightness(105%)]"
+          />
+          <span className="text-[10px] text-muted-foreground whitespace-nowrap">até</span>
+          <input
+            type="date"
+            title="Data de término"
+            value={schedEndDate}
+            min={schedDate || new Date().toISOString().split("T")[0]}
+            onChange={(e) => setSchedEndDate(e.target.value)}
+            className="h-6 w-[100px] shrink-0 text-[10px] px-1 rounded-md bg-secondary/70 border border-border/50 text-foreground focus:outline-none focus:ring-1 focus:ring-primary [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-80 [&::-webkit-calendar-picker-indicator]:[filter:invert(55%)_sepia(90%)_saturate(400%)_hue-rotate(5deg)_brightness(105%)]"
+          />
+          <span className="text-[10px] text-muted-foreground whitespace-nowrap">das</span>
+          <input
+            type="time"
+            title="Horário de início diário"
+            value={schedTime}
+            onChange={(e) => setSchedTime(e.target.value)}
+            className="h-6 w-[68px] shrink-0 text-[10px] px-1 rounded-md bg-secondary/70 border border-border/50 text-foreground focus:outline-none focus:ring-1 focus:ring-primary [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-80 [&::-webkit-calendar-picker-indicator]:[filter:invert(55%)_sepia(90%)_saturate(400%)_hue-rotate(5deg)_brightness(105%)]"
+          />
+          <span className="text-[10px] text-muted-foreground whitespace-nowrap">às</span>
+          <input
+            type="time"
+            title="Horário de término diário"
+            value={schedEndTime}
+            onChange={(e) => setSchedEndTime(e.target.value)}
+            className="h-6 w-[68px] shrink-0 text-[10px] px-1 rounded-md bg-secondary/70 border border-border/50 text-foreground focus:outline-none focus:ring-1 focus:ring-primary [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-80 [&::-webkit-calendar-picker-indicator]:[filter:invert(55%)_sepia(90%)_saturate(400%)_hue-rotate(5deg)_brightness(105%)]"
+          />
+          <button type="button" onClick={handleSaveOrCancel}
+            className="h-6 px-2.5 rounded-md font-semibold text-[10px] transition-colors shrink-0 bg-primary/80 text-primary-foreground hover:bg-primary">
+            Salvar
+          </button>
+          <button type="button" onClick={() => onConfigChange({ enabled: !cfg.enabled })}
+            className={`flex items-center gap-1 text-[10px] px-2.5 h-6 rounded-md border transition-colors font-medium shrink-0 ${cfg.enabled ? "border-green-500/40 text-green-400 bg-green-500/10 hover:bg-green-500/20" : "border-orange-500/40 text-orange-400/80 bg-orange-500/10 hover:bg-orange-500/20"}`}>
+            <Power className="h-3 w-3" />
+            {cfg.enabled ? "Ativo" : "Inativo"}
+          </button>
+        </div>
       </div>
-
-      {/* Preview volume (só quando tocando) */}
-      {isPlaying && (
-        <div className="px-3 pb-3 flex items-center gap-3">
-          <Volume2 className="h-4 w-4 text-primary shrink-0" />
-          <Slider value={[previewVolume]} onValueChange={(v) => onVolumeChange(v[0])} min={0} max={1} step={0.01} className="flex-1 max-w-[200px]" />
-          <span className="text-xs text-muted-foreground w-8">{Math.round(previewVolume * 100)}%</span>
-        </div>
-      )}
 
     </div>
   );
 }
 
-// ── Bulk action bar ───────────────────────────────────────────────────────────
+// ── Dropdown card: selecionar clientes para distribuição ─────────────────────
 
-function BulkBar({
-  count,
-  onEnable,
-  onDisable,
-  onDelete,
-  onPriority,
-  onSchedule,
-  onClear,
-}: {
-  count: number;
-  onEnable: () => void;
-  onDisable: () => void;
-  onDelete: () => void;
-  onPriority: (p: number) => void;
-  onSchedule: (t: string | null) => void;
-  onClear: () => void;
-}) {
-  const [scheduleVal, setScheduleVal] = useState("");
-  const [showSched, setShowSched] = useState(false);
+interface DistribuirCardProps {
+  clients: Client[];
+  loadingClients: boolean;
+  selectedClients: Set<string>;
+  onChange: (next: Set<string>) => void;
+  onClose: () => void;
+}
+
+function DistribuirCard({ clients, loadingClients, selectedClients, onChange, onClose }: DistribuirCardProps) {
+  const [clientSearch, setClientSearch] = useState("");
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (cardRef.current && !cardRef.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [onClose]);
+
+  const filtered = clients.filter((c) => c.name.toLowerCase().includes(clientSearch.toLowerCase()));
+  const allSelected = filtered.length > 0 && filtered.every((c) => selectedClients.has(c.id));
+
+  const toggle = (id: string) => {
+    const n = new Set(selectedClients);
+    n.has(id) ? n.delete(id) : n.add(id);
+    onChange(n);
+  };
+
+  const toggleAll = () => {
+    const n = new Set(selectedClients);
+    if (allSelected) filtered.forEach((c) => n.delete(c.id));
+    else filtered.forEach((c) => n.add(c.id));
+    onChange(n);
+  };
 
   return (
-    <div className="bg-primary/10 border border-primary/20 rounded-xl p-3 space-y-3">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <span className="text-sm font-semibold text-primary">{count} spot{count !== 1 ? "s" : ""} selecionado{count !== 1 ? "s" : ""}</span>
-        <button type="button" onClick={onClear} className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
-          <X className="h-3.5 w-3.5" /> Limpar seleção
-        </button>
+    <div ref={cardRef}
+      className="absolute right-0 top-full mt-2 z-50 w-60 h-[280px] bg-card border border-border/50 rounded-xl shadow-2xl flex flex-col overflow-hidden">
+
+      {/* Header — shrink-0, uma linha, não cresce */}
+      <div className="flex items-center gap-1.5 px-3 py-2 bg-secondary/30 border-b border-border/30 shrink-0">
+        <span className="text-xs font-semibold flex-1 truncate">Selecionar destinatários</span>
+        {selectedClients.size > 0 && (
+          <span className="text-[10px] text-primary font-bold shrink-0">{selectedClients.size}</span>
+        )}
       </div>
 
-      <div className="flex flex-wrap gap-2">
-        <Button type="button" size="sm" onClick={onEnable} className="h-7 text-xs bg-green-600/80 hover:bg-green-600 text-white"><Power className="h-3.5 w-3.5 mr-1" />Ativar</Button>
-        <Button type="button" size="sm" onClick={onDisable} className="h-7 text-xs bg-secondary hover:bg-secondary/80 text-muted-foreground"><Power className="h-3.5 w-3.5 mr-1" />Desativar</Button>
-        <Button type="button" size="sm" onClick={onDelete} className="h-7 text-xs bg-destructive/80 hover:bg-destructive text-white"><Trash2 className="h-3.5 w-3.5 mr-1" />Excluir</Button>
-        <Button type="button" size="sm" onClick={() => setShowSched(!showSched)} className="h-7 text-xs bg-secondary hover:bg-secondary/80 text-foreground"><Clock className="h-3.5 w-3.5 mr-1" />Horário</Button>
-      </div>
-
-      {/* Bulk priority */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <span className="text-xs text-muted-foreground">Prioridade em lote:</span>
-        <div className="flex gap-1">
-          {[1, 2, 3, 4, 5].map((n) => (
-            <button key={n} type="button" onClick={() => onPriority(n)}
-              className="w-7 h-7 rounded-lg text-xs font-bold bg-secondary/60 hover:bg-primary hover:text-primary-foreground transition-colors">
-              {n}×
-            </button>
-          ))}
+      {/* Busca + "Todos" — shrink-0 */}
+      <div className="px-2 pt-2 pb-1 shrink-0 space-y-1.5">
+        <div className="relative">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground/50" />
+          <input value={clientSearch} onChange={(e) => setClientSearch(e.target.value)}
+            placeholder="Buscar cliente…"
+            className="w-full h-6 pl-6 pr-2 text-[10px] rounded-md bg-secondary/60 border border-border/40 text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50" />
+        </div>
+        <div className="flex items-center justify-between px-1">
+          <span className="text-[10px] text-muted-foreground/60">Clientes ({filtered.length})</span>
+          <label className="flex items-center gap-1 cursor-pointer text-[10px] text-muted-foreground/60 hover:text-foreground transition-colors">
+            <input type="checkbox" checked={allSelected} onChange={toggleAll} className="w-3 h-3 accent-primary" />
+            Todos
+          </label>
         </div>
       </div>
 
-      {/* Bulk schedule */}
-      {showSched && (
-        <div className="flex items-center gap-2 flex-wrap">
-          <Input type="time" value={scheduleVal} onChange={(e) => setScheduleVal(e.target.value)} className="h-8 w-32 text-sm bg-secondary" />
-          <Button type="button" size="sm" onClick={() => { if (/^\d{2}:\d{2}$/.test(scheduleVal)) { onSchedule(scheduleVal); setShowSched(false); } else toast.error("Use HH:MM"); }}
-            className="h-8 bg-primary text-primary-foreground px-3 text-xs">Aplicar</Button>
-          <button type="button" onClick={() => { onSchedule(null); setShowSched(false); }} className="text-xs text-destructive hover:underline">Remover horários</button>
-        </div>
-      )}
+      {/* Lista — flex-1 overflow-y-auto, não cresce o card */}
+      <div className="flex-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {loadingClients ? (
+          <div className="flex items-center justify-center h-full gap-1.5 text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+            <span className="text-[10px]">Carregando…</span>
+          </div>
+        ) : (
+          <>
+            {filtered.map((c) => (
+              <div key={c.id}
+                onClick={() => toggle(c.id)}
+                className="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-white/5 transition-colors">
+                <input type="checkbox" title={`Selecionar ${c.name}`} checked={selectedClients.has(c.id)} onChange={() => toggle(c.id)}
+                  className="w-3 h-3 accent-primary shrink-0" onClick={(e) => e.stopPropagation()} />
+                <span className={`text-[10px] truncate flex-1 ${selectedClients.has(c.id) ? "text-foreground" : "text-muted-foreground"}`}>
+                  {c.name}
+                </span>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Boletins EBC ─────────────────────────────────────────────────────────────
+
+const EBC_CATEGORIES = [
+  { id: "saude", label: "Saúde" },
+  { id: "esportes", label: "Esportes" },
+  { id: "cultura", label: "Cultura & Lazer" },
+  { id: "educacao", label: "Educação" },
+  { id: "economia", label: "Economia" },
+  { id: "meio-ambiente", label: "Meio Ambiente" },
+  { id: "inovacao", label: "Inovação" },
+  { id: "direitos-humanos", label: "Direitos Humanos" },
+];
+
+interface NoticiasCardProps {
+  selectedCategories: Set<string>;
+  onToggle: (id: string) => void;
+  onToggleAll: () => void;
+  onClose: () => void;
+  loading?: boolean;
+}
+
+function NoticiasCard({ selectedCategories, onToggle, onToggleAll, onClose, loading }: NoticiasCardProps) {
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (cardRef.current && !cardRef.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [onClose]);
+
+  const allSelected = EBC_CATEGORIES.every((c) => selectedCategories.has(c.id));
+
+  return (
+    <div ref={cardRef}
+      className="absolute left-0 top-full mt-2 z-50 w-52 bg-card border border-blue-500/30 rounded-xl shadow-2xl flex flex-col overflow-hidden">
+
+      {/* Header fixo */}
+      <div className="flex items-center gap-1.5 px-3 py-2 bg-blue-500/10 border-b border-blue-500/20 shrink-0">
+        <Newspaper className="h-3.5 w-3.5 text-blue-400 shrink-0" />
+        <span className="text-xs font-semibold flex-1 truncate text-blue-300">Notícias do Dia</span>
+        {loading && <Loader2 className="h-3 w-3 text-blue-400 animate-spin shrink-0" />}
+        {!loading && selectedCategories.size > 0 && (
+          <span className="text-[10px] text-blue-400 font-bold shrink-0">{selectedCategories.size}</span>
+        )}
+      </div>
+
+      {/* "Todas" — altura fixa */}
+      <div className="px-3 py-1.5 shrink-0">
+        <label className="flex items-center gap-1.5 cursor-pointer text-[10px] text-muted-foreground/60 hover:text-foreground transition-colors">
+          <input type="checkbox" checked={allSelected} onChange={onToggleAll} className="w-3 h-3 accent-blue-500" />
+          Todas as categorias
+        </label>
+      </div>
+
+      {/* Lista fixa — altura máxima fixa, scroll interno */}
+      <div className="overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden h-[168px]">
+        {EBC_CATEGORIES.map((cat) => (
+          <div key={cat.id} onClick={() => onToggle(cat.id)}
+            className="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-blue-500/5 transition-colors">
+            <input type="checkbox" title={cat.label} checked={selectedCategories.has(cat.id)} onChange={() => onToggle(cat.id)}
+              className="w-3 h-3 accent-blue-500 shrink-0" onClick={(e) => e.stopPropagation()} />
+            <span className={`text-[10px] flex-1 ${selectedCategories.has(cat.id) ? "text-blue-300 font-medium" : "text-muted-foreground"}`}>
+              {cat.label}
+            </span>
+          </div>
+        ))}
+      </div>
+
     </div>
   );
 }
@@ -319,119 +442,130 @@ function BulkBar({
 
 interface SpotsPanelProps {
   userId?: string | null;
-  onPreviewStart?: () => void;
-  onPreviewEnd?: () => void;
+  isAdmin?: boolean;
+  isLocked?: boolean;
+  isUploadLocked?: boolean;
+  onPlaySpot?: (spot: { id: string; title: string; file_path: string; genre: string }) => void;
 }
 
-const SpotsPanel = ({ userId: propUserId, onPreviewStart, onPreviewEnd }: SpotsPanelProps) => {
-  const [settings, setSettings] = useState<SpotSettings>(() =>
-    typeof window !== "undefined" ? getSpotSettings() : { enabled: false, interval: 5 }
-  );
+const SpotsPanel = ({ userId: propUserId, isAdmin = false, isLocked = false, isUploadLocked = false, onPlaySpot }: SpotsPanelProps) => {
+  const { consumeFeature, isFeatureLocked } = useClientFeatures();
+  const { prefs, loaded: prefsLoaded, updatePref } = useUserPreferences();
+  // Badge de upgrade — aparece ao tentar salvar com plano bloqueado
+  const [lockedBadge, setLockedBadge] = useState(false);
+  const lockedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showLockedBadge = () => {
+    setLockedBadge(true);
+    if (lockedTimerRef.current) clearTimeout(lockedTimerRef.current);
+    lockedTimerRef.current = setTimeout(() => setLockedBadge(false), 3000);
+  };
+  // Guard: intercepta qualquer ação de save quando isLocked
+  const guardSave = (fn: () => void) => () => {
+    if (isLocked) { showLockedBadge(); return; }
+    fn();
+  };
 
+  const [settings, setSettings] = useState<SpotSettings>(() => getSpotSettings());
   const [spots, setSpots] = useState<Spot[]>([]);
-  const [configs, setConfigs] = useState<SpotConfigMap>(() =>
-    typeof window !== "undefined" ? loadSpotConfigs() : {}
-  );
+  const [configs, setConfigs] = useState<SpotConfigMap>({});
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  // Preview audio — independent of main player
-  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
-  const [playingId, setPlayingId] = useState<string | null>(null);
-  const [previewProgress, setPreviewProgress] = useState(0);
-  const [previewVolume, setPreviewVolume] = useState(0.8);
+  // notícias EBC
+  const [showNoticias, setShowNoticias] = useState(false);
+  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
+  const [newsInterval, setNewsInterval] = useState<number>(3);
+  const [fetchingNoticias, setFetchingNoticias] = useState(false);
 
+  // spot sendo pré-visualizado no player (preview toggle)
+  const [previewingId, setPreviewingId] = useState<string | null>(null);
+
+  // seleção em lote de spots (checkboxes nos rows)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // distribuição para clientes
+  const [broadcasting, setBroadcasting] = useState(false);
+  const [showDistribuir, setShowDistribuir] = useState(false);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [loadingClients, setLoadingClients] = useState(false);
+  const [distributionClients, setDistributionClients] = useState<Set<string>>(new Set());
+
+  const tokenRef = useRef<string | null>(null);
   const userIdRef = useRef<string | null>(propUserId ?? null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const newsIntervalRowRef = useRef<HTMLDivElement>(null);
 
+  // Hydrate boletins/news prefs from Supabase when loaded
+  useEffect(() => {
+    if (!prefsLoaded) return;
+    const cats = prefs.boletins_categories ?? [];
+    setSelectedCategories(new Set(cats));
+    setNewsInterval(prefs.news_interval ?? 3);
+  }, [prefsLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Dialog de confirmação personalizado
+  const [confirmDialog, setConfirmDialog] = useState<{
+    open: boolean;
+    message: string;
+    onConfirm: () => void;
+  }>({ open: false, message: "", onConfirm: () => {} });
+
+  const showConfirm = (message: string, onConfirm: () => void) => {
+    setConfirmDialog({ open: true, message, onConfirm });
+  };
+
+  // ── Init — carrega token, spots, configs e settings do banco ──────────────
 
   useEffect(() => {
-    // Clean corrupted owner-avatar-user-id from localStorage
-    const storedOwner = localStorage.getItem("owner-avatar-user-id");
-    if (storedOwner && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storedOwner)) {
-      localStorage.removeItem("owner-avatar-user-id");
-    }
-
-    // Load spots immediately (local API, no auth needed)
-    loadSpots();
-    // Resolve auth in background for operations that need userId
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      const token = session?.access_token ?? null;
       const uid = session?.user?.id ?? null;
+      tokenRef.current = token;
       if (uid) userIdRef.current = uid;
+
+      if (!token) { setLoading(false); return; }
+
+      // Carrega tudo em paralelo do banco
+      const [fetchedSettings, fetchedConfigs] = await Promise.all([
+        loadSpotSettings(token),
+        fetchSpotConfigs(token),
+      ]);
+      setSettings(fetchedSettings);
+      setConfigs(fetchedConfigs);
+
+      await loadSpots(token);
     });
 
-    const onCfgChange = () => setConfigs(loadSpotConfigs());
+    const onCfgChange = () => setConfigs({ ...loadSpotConfigs() });
     window.addEventListener("spot-configs-changed", onCfgChange);
     return () => {
       window.removeEventListener("spot-configs-changed", onCfgChange);
-      previewAudioRef.current?.pause();
-      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Sync if parent resolves a different userId later
+  // Sync userId se o pai resolver depois
   useEffect(() => {
     if (!propUserId || propUserId === userIdRef.current) return;
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(propUserId)) return;
     userIdRef.current = propUserId;
-    loadSpots();
+    if (tokenRef.current) loadSpots(tokenRef.current);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [propUserId]);
 
-  const loadSpots = async () => {
+  const loadSpots = async (token: string) => {
     try {
-      const res = await fetch("/api/spots");
+      const res = await fetch("/api/spots", {
+        headers: { authorization: `Bearer ${token}` },
+      });
       const json = await res.json();
-      setSpots(json.spots || []);
+      setSpots(json.spots ?? []);
     } catch (err: any) {
       toast.error(`Erro ao carregar spots: ${err?.message}`);
     } finally {
       setLoading(false);
     }
-  };
-
-  // ── Preview ────────────────────────────────────────────────────────────────
-
-  const stopPreview = () => {
-    previewAudioRef.current?.pause();
-    if (progressIntervalRef.current) { clearInterval(progressIntervalRef.current); progressIntervalRef.current = null; }
-    setPlayingId(null);
-    setPreviewProgress(0);
-    onPreviewEnd?.();
-  };
-
-  const handlePlayPause = async (spot: Spot) => {
-    if (playingId === spot.id) { stopPreview(); return; }
-    stopPreview();
-
-    try {
-      const audio = new Audio(spot.file_path);
-      audio.volume = previewVolume;
-      previewAudioRef.current = audio;
-
-      audio.onended = () => stopPreview();
-      audio.onerror = () => { toast.error("Erro ao reproduzir spot."); stopPreview(); };
-
-      onPreviewStart?.();
-      await audio.play();
-      setPlayingId(spot.id);
-
-      progressIntervalRef.current = setInterval(() => {
-        if (!previewAudioRef.current) return;
-        const { currentTime, duration } = previewAudioRef.current;
-        setPreviewProgress(duration > 0 ? currentTime / duration : 0);
-      }, 500);
-    } catch { toast.error("Erro ao reproduzir spot."); }
-  };
-
-  const handlePreviewVolume = (v: number) => {
-    setPreviewVolume(v);
-    if (previewAudioRef.current) previewAudioRef.current.volume = v;
   };
 
   // ── Upload ────────────────────────────────────────────────────────────────
@@ -440,18 +574,57 @@ const SpotsPanel = ({ userId: propUserId, onPreviewStart, onPreviewEnd }: SpotsP
     const files = Array.from(e.target.files ?? []);
     if (!files.length) return;
 
-    const isValid = (f: File) => /\.(mp3|wav|ogg|m4a|aac|flac|opus)$/i.test(f.name) ||
-      f.type.startsWith("audio/");
+    if (isUploadLocked) { showLockedBadge(); if (fileInputRef.current) fileInputRef.current.value = ""; return; }
 
+    const token = tokenRef.current;
+    if (!token) { toast.error("Sessão expirada. Recarregue a página."); return; }
+
+    const isValid = (f: File) => /\.(mp3|wav|ogg|m4a|aac|flac|opus)$/i.test(f.name) || f.type.startsWith("audio/");
     const invalid = files.filter((f) => !isValid(f));
-    if (invalid.length) { toast.error(`${invalid.length} arquivo(s) inválido(s).`); }
-
+    if (invalid.length) toast.error(`${invalid.length} arquivo(s) inválido(s).`);
     const valid = files.filter(isValid);
     if (!valid.length) return;
 
+    // Se há clientes selecionados para distribuição → envia para eles via broadcast
+    if (isAdmin && distributionClients.size > 0) {
+      setBroadcasting(true);
+      setUploading(true);
+      setUploadProgress({ done: 0, total: valid.length });
+      let ok = 0, fail = 0;
+      for (let i = 0; i < valid.length; i++) {
+        const file = valid[i];
+        try {
+          const form = new FormData();
+          form.append("file", file);
+          form.append("title", file.name.replace(/\.[^.]+$/, ""));
+          form.append("targetUserIds", JSON.stringify(Array.from(distributionClients)));
+          const res = await fetch("/api/admin/broadcast-spot", {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+            body: form,
+          });
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error ?? "Erro");
+          ok += json.ok ?? 1;
+          fail += json.fail ?? 0;
+        } catch (err: any) {
+          fail++;
+          toast.error(`Erro: ${err?.message}`);
+        }
+        setUploadProgress({ done: i + 1, total: valid.length });
+      }
+      if (ok > 0) toast.success(`${valid.length} spot${valid.length !== 1 ? "s" : ""} enviado${valid.length !== 1 ? "s" : ""} para ${distributionClients.size} cliente${distributionClients.size !== 1 ? "s" : ""}.`);
+      if (fail > 0) toast.error(`${fail} envio${fail !== 1 ? "s" : ""} falharam.`);
+      setBroadcasting(false);
+      setUploading(false);
+      setUploadProgress(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    // Upload normal para a própria biblioteca
     setUploading(true);
     setUploadProgress({ done: 0, total: valid.length });
-
     let ok = 0, fail = 0;
 
     for (let i = 0; i < valid.length; i++) {
@@ -461,7 +634,11 @@ const SpotsPanel = ({ userId: propUserId, onPreviewStart, onPreviewEnd }: SpotsP
         const form = new FormData();
         form.append("file", file);
         form.append("title", title);
-        const res = await fetch("/api/spots", { method: "POST", body: form });
+        const res = await fetch("/api/spots", {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: form,
+        });
         if (!res.ok) throw new Error((await res.json()).error ?? "Erro no servidor");
         ok++;
       } catch (err: any) {
@@ -472,97 +649,312 @@ const SpotsPanel = ({ userId: propUserId, onPreviewStart, onPreviewEnd }: SpotsP
     }
 
     invalidateSpotsCache();
-    if (ok > 0) toast.success(`${ok} spot${ok !== 1 ? "s" : ""} enviado${ok !== 1 ? "s" : ""}.`);
+    if (ok > 0) {
+      toast.success(`${ok} spot${ok !== 1 ? "s" : ""} enviado${ok !== 1 ? "s" : ""}.`);
+    }
     if (fail > 0) toast.error(`${fail} falhou no envio.`);
 
     setUploading(false);
     setUploadProgress(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
-    await loadSpots();
+    await loadSpots(token);
   };
 
   // ── Delete ────────────────────────────────────────────────────────────────
 
-  const deleteSpots = async (ids: string[]) => {
-    if (!confirm(`Excluir ${ids.length} spot${ids.length !== 1 ? "s" : ""}?`)) return;
-    for (const id of ids) {
-      try {
-        await fetch("/api/spots", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
-        removeSpotConfig(id);
-        if (playingId === id) stopPreview();
-      } catch { toast.error("Erro ao excluir spot."); }
-    }
-    invalidateSpotsCache();
-    setSpots((prev) => prev.filter((s) => !ids.includes(s.id)));
-    setSelected(new Set());
-    toast.success(`${ids.length} spot${ids.length !== 1 ? "s" : ""} excluído${ids.length !== 1 ? "s" : ""}.`);
-  };
-
-  const handleRename = async (spot: Spot, newTitle: string) => {
-    try {
-      await fetch("/api/spots", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: spot.id, title: newTitle }) });
-      setSpots((prev) => prev.map((s) => s.id === spot.id ? { ...s, title: newTitle } : s));
+  const deleteSpots = (ids: string[]) => {
+    const token = tokenRef.current;
+    if (!token) return;
+    const label = ids.length === 1 ? "este anúncio" : `${ids.length} anúncios`;
+    showConfirm(`Excluir ${label}? Esta ação não pode ser desfeita.`, async () => {
+      for (const id of ids) {
+        try {
+          await fetch("/api/spots", {
+            method: "DELETE",
+            headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+            body: JSON.stringify({ id }),
+          });
+          removeSpotConfig(id);
+        } catch { toast.error("Erro ao excluir."); }
+      }
       invalidateSpotsCache();
-      toast.success("Renomeado.");
-    } catch { toast.error("Erro ao renomear."); }
-  };
-
-  const handleConfigChange = (id: string, patch: Partial<SpotConfig>) => {
-    updateSpotConfig(id, patch);
-    setConfigs(loadSpotConfigs());
-    invalidateSpotsCache();
-  };
-
-  // ── Selection ─────────────────────────────────────────────────────────────
-
-  const toggleSelect = (id: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
+      setSpots((prev) => prev.filter((s) => !ids.includes(s.id)));
+      setSelectedIds((prev) => { const next = new Set(prev); ids.forEach((id) => next.delete(id)); return next; });
+      toast.success(`${ids.length === 1 ? "Anúncio excluído." : `${ids.length} anúncios excluídos.`}`);
     });
   };
 
-  const toggleSelectAll = () => {
-    setSelected((prev) => prev.size === filtered.length ? new Set() : new Set(filtered.map((s) => s.id)));
+  // ── Rename ────────────────────────────────────────────────────────────────
+
+  const handleRename = async (spot: Spot, newTitle: string) => {
+    const token = tokenRef.current;
+    if (!token) return;
+    const targets = selectedIds.has(spot.id) && selectedIds.size > 1
+      ? Array.from(selectedIds)
+      : [spot.id];
+    try {
+      await Promise.all(targets.map((id) =>
+        fetch("/api/spots", {
+          method: "PATCH",
+          headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+          body: JSON.stringify({ id, title: newTitle }),
+        })
+      ));
+      setSpots((prev) => prev.map((s) => targets.includes(s.id) ? { ...s, title: newTitle } : s));
+      invalidateSpotsCache();
+      toast.success(targets.length > 1 ? `${targets.length} spots renomeados.` : "Renomeado.");
+    } catch { toast.error("Erro ao renomear."); }
   };
 
-  // ── Bulk ops ──────────────────────────────────────────────────────────────
+  // ── Config change — salva no banco ────────────────────────────────────────
 
-  const bulkConfigChange = (ids: string[], patch: Partial<SpotConfig>) => {
-    ids.forEach((id) => updateSpotConfig(id, patch));
-    setConfigs(loadSpotConfigs());
-    invalidateSpotsCache();
-    toast.success(`Atualizado ${ids.length} spot${ids.length !== 1 ? "s" : ""}.`);
+  const handleConfigChange = async (id: string, patch: Partial<SpotConfig>) => {
+    if (isLocked) { showLockedBadge(); return; }
+    // Verifica crédito de programar_spots quando agenda
+    if (patch.scheduleStart && !isAdmin) {
+      if (isFeatureLocked("programar_spots")) { toast.error("Recurso bloqueado. Atualize seu plano."); return; }
+      const ok = await consumeFeature("programar_spots");
+      if (!ok) return;
+    }
+    const token = tokenRef.current;
+    if (!token) return;
+
+    // Se este spot está selecionado junto com outros → aplica em todos os selecionados
+    const targets = selectedIds.has(id) && selectedIds.size > 1
+      ? Array.from(selectedIds)
+      : [id];
+
+    setConfigs((prev) => {
+      const updated = { ...prev };
+      targets.forEach((tid) => {
+        updated[tid] = { ...(updated[tid] ?? DEFAULT_SPOT_CONFIG), ...patch };
+      });
+      setCachedSpotConfigs(updated);
+      return updated;
+    });
+
+    // NÃO invalida o cache de spots aqui — só configs mudaram, os arquivos são os mesmos
+    await Promise.all(targets.map((tid) => saveSpotConfig(tid, patch, token)));
+
+    if (patch.enabled === true && !settings.enabled) {
+      const next: SpotSettings = { ...settings, enabled: true };
+      setSettings(next);
+      await saveSpotSettings(next, token);
+    }
+
+    if (targets.length > 1) {
+      toast.success(`Configuração aplicada em ${targets.length} spots.`);
+    } else if (patch.scheduleStart !== undefined) {
+      if (patch.scheduleStart) {
+        toast.success("Programado — será ativado automaticamente na data definida.");
+      } else {
+        toast.success("Programação removida — spot toca sempre que estiver ativo.");
+      }
+    } else if (patch.enabled === true) {
+      toast.success("Spot ativado.");
+    } else if (patch.enabled === false) {
+      toast.success("Spot pausado.");
+    }
   };
 
-  // ── Interval ──────────────────────────────────────────────────────────────
+  // ── Distribuir: carrega lista de clientes ────────────────────────────────
 
-  const handleToggleEnabled = useCallback(() => {
+  const openDistribuir = async () => {
+    setShowDistribuir((v) => !v);
+    if (clients.length > 0) return; // já carregou
+    const token = tokenRef.current;
+    if (!token) return;
+    setLoadingClients(true);
+    try {
+      const res = await fetch("/api/admin/list-clients", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({}),
+      });
+      const json = await res.json();
+      const adminIds = new Set(
+        (json.roles ?? []).filter((r: any) => r.role === "admin").map((r: any) => r.user_id)
+      );
+      const list: Client[] = (json.clients ?? [])
+        .filter((c: any) => !adminIds.has(c.id))
+        .map((c: any) => ({ id: c.id, name: c.nome || c.username || c.email?.split("@")[0] || c.id.slice(0, 8) }));
+      setClients(list);
+    } catch {
+      toast.error("Erro ao carregar clientes.");
+    } finally {
+      setLoadingClients(false);
+    }
+  };
+
+  // ── Settings ──────────────────────────────────────────────────────────────
+
+  const handleToggleEnabled = useCallback(async () => {
+    const token = tokenRef.current;
+    if (!token) return;
     const next: SpotSettings = { ...settings, enabled: !settings.enabled };
     setSettings(next);
-    saveSpotSettings(next);
+    await saveSpotSettings(next, token);
     toast.success(next.enabled ? "Spots ativados." : "Spots desativados.");
   }, [settings]);
 
+  const handleIntervalChange = async (n: number) => {
+    if (isLocked) { showLockedBadge(); return; }
+    const token = tokenRef.current;
+    if (!token) return;
+    // Ativar spots automaticamente ao definir intervalo
+    const next: SpotSettings = { enabled: true, interval: n };
+    setSettings(next);
+    await saveSpotSettings(next, token);
+  };
+
+  // ── Notícias EBC — fetch automático ao selecionar categoria ─────────────
+
+  const handleToggleCategory = async (id: string) => {
+    const token = tokenRef.current;
+    const isAdding = !selectedCategories.has(id);
+
+    // Atualiza estado local imediatamente
+    const next = new Set(selectedCategories);
+    isAdding ? next.add(id) : next.delete(id);
+    setSelectedCategories(next);
+    updatePref("boletins_categories", Array.from(next));
+
+    // Dispara evento para o player recarregar a fila com/sem notícias
+    window.dispatchEvent(new CustomEvent("spot-settings-changed", { detail: { newsCategories: Array.from(next) } }));
+
+    // Só busca quando está ativando uma categoria (silencioso — sem toasts)
+    if (!isAdding || !token) return;
+
+    setFetchingNoticias(true);
+    try {
+      await fetch("/api/boletins", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({ categories: [id] }),
+      });
+      // Dispara novamente após o fetch para que o player pegue as notícias novas
+      window.dispatchEvent(new CustomEvent("spot-settings-changed", { detail: { newsCategories: Array.from(next) } }));
+    } catch {
+      // silencioso
+    } finally {
+      setFetchingNoticias(false);
+    }
+  };
+
+  const handleToggleAll = async () => {
+    const token = tokenRef.current;
+    const allSelected = EBC_CATEGORIES.every((c) => selectedCategories.has(c.id));
+
+    if (allSelected) {
+      // Desmarca todas
+      setSelectedCategories(new Set());
+      updatePref("boletins_categories", []);
+      window.dispatchEvent(new Event("spot-settings-changed"));
+      return;
+    }
+
+    // Marca todas e faz um único fetch com todas as categorias de uma vez
+    const allIds = EBC_CATEGORIES.map((c) => c.id);
+    setSelectedCategories(new Set(allIds));
+    updatePref("boletins_categories", allIds);
+    window.dispatchEvent(new Event("spot-settings-changed"));
+
+    if (!token) return;
+    setFetchingNoticias(true);
+    try {
+      await fetch("/api/boletins", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({ categories: allIds }),
+      });
+      window.dispatchEvent(new Event("spot-settings-changed"));
+    } catch {
+      // silencioso
+    } finally {
+      setFetchingNoticias(false);
+    }
+  };
+
+  const handleNewsIntervalChange = (n: number) => {
+    setNewsInterval(n);
+    updatePref("news_interval", n);
+    window.dispatchEvent(new Event("spot-settings-changed"));
+  };
+
+  // Drag no traço azul → muda intervalo da notícia
+  const handleNewsDragStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const updateFromX = (clientX: number) => {
+      const row = newsIntervalRowRef.current;
+      if (!row) return;
+      const rect = row.getBoundingClientRect();
+      const relX = Math.max(0, Math.min(clientX - rect.left, rect.width - 1));
+      const idx = Math.min(4, Math.floor((relX / rect.width) * 5));
+      handleNewsIntervalChange(idx + 1);
+    };
+    updateFromX(e.clientX);
+    const onMove = (ev: MouseEvent) => updateFromX(ev.clientX);
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
+
+  // ── Só Músicas ────────────────────────────────────────────────────────────
+
+  const handleSoMusicas = async () => {
+    if (isLocked) { showLockedBadge(); return; }
+    const token = tokenRef.current;
+    if (!token) return;
+    const newConfigs = { ...configs };
+    for (const spot of spots) {
+      newConfigs[spot.id] = { ...(newConfigs[spot.id] ?? DEFAULT_SPOT_CONFIG), enabled: false };
+      await saveSpotConfig(spot.id, { enabled: false }, token);
+    }
+    setConfigs(newConfigs);
+    setCachedSpotConfigs(newConfigs);
+    const next = { ...settings, enabled: false };
+    setSettings(next);
+    await saveSpotSettings(next, token);
+    invalidateSpotsCache();
+    toast.success("Só músicas ativado.");
+  };
 
   // ── Derived ───────────────────────────────────────────────────────────────
 
-  const filtered = spots.filter((s) => s.title.toLowerCase().includes(search.toLowerCase()));
-  const selectedIds = Array.from(selected);
+  const searchLower = search.toLowerCase();
+  const filtered = spots.filter((s) =>
+    s.title.toLowerCase().includes(searchLower) ||
+    (s.owner_name?.toLowerCase().includes(searchLower) ?? false)
+  );
   const enabledSpots = spots.filter((s) => (configs[s.id] ?? DEFAULT_SPOT_CONFIG).enabled);
   const scheduledCount = enabledSpots.filter((s) => configs[s.id]?.scheduleStart).length;
 
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="max-w-2xl mx-auto space-y-3">
+    <div className="w-full space-y-3 relative">
+
+      {/* Badge de upgrade — aparece ao tentar salvar com plano bloqueado */}
+      <div className={`absolute top-0 left-1/2 -translate-x-1/2 z-30 pointer-events-none transition-all duration-300 ${lockedBadge ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-1"}`}>
+        <div className="flex items-center gap-1.5 bg-background/90 backdrop-blur-sm border border-border/50 rounded-full px-3 py-1.5 shadow-md whitespace-nowrap">
+          <Lock className="h-3 w-3 text-primary shrink-0" />
+          <p className="text-xs font-medium text-foreground">Atualize seu plano para usar esse recurso.</p>
+        </div>
+      </div>
 
       {/* ── Header ── */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Mic className="h-5 w-5 text-primary" />
-          <h2 className="text-base font-semibold">Spots de Áudio</h2>
+      <div className="flex items-center">
+        {/* Esquerda: título */}
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          <Mic className="h-5 w-5 text-primary shrink-0" />
+          <h2 className="text-base font-semibold whitespace-nowrap">Seus Anúncios</h2>
           {spots.length > 0 && (
             <div className="flex items-center gap-1.5">
               <span className="text-xs bg-primary/20 text-primary rounded-full px-2 py-0.5">{spots.length}</span>
@@ -571,40 +963,112 @@ const SpotsPanel = ({ userId: propUserId, onPreviewStart, onPreviewEnd }: SpotsP
             </div>
           )}
         </div>
-        <div className="flex items-center gap-2">
+
+        {/* Centro: botões de controle */}
+        <div className="flex items-center gap-2 shrink-0 relative">
+
+          {/* Botão Notícias — visível para todos */}
+          <div className="relative shrink-0">
+            <button type="button" onClick={() => setShowNoticias((v) => !v)}
+              title="Notícias do Dia"
+              className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors min-w-[88px] justify-center ${selectedCategories.size > 0 ? "border-blue-500/60 text-blue-300 bg-blue-500/10 hover:bg-blue-500/20" : "border-border/50 text-muted-foreground hover:text-foreground hover:border-border"}`}>
+              {fetchingNoticias ? <Loader2 className="h-3 w-3 animate-spin" /> : <Newspaper className="h-3 w-3" />}
+              Notícias
+              <span className={`rounded-full text-[9px] font-bold w-4 h-4 flex items-center justify-center leading-none shrink-0 transition-opacity ${selectedCategories.size > 0 ? "bg-blue-500 text-white opacity-100" : "opacity-0 pointer-events-none"}`}>
+                {selectedCategories.size || ""}
+              </span>
+            </button>
+            {showNoticias && (
+              <NoticiasCard
+                selectedCategories={selectedCategories}
+                onToggle={handleToggleCategory}
+                onToggleAll={handleToggleAll}
+                onClose={() => setShowNoticias(false)}
+                loading={fetchingNoticias}
+              />
+            )}
+          </div>
+
+          {/* Intervalo: clique = spot (laranja) · arrasta traço azul = notícia */}
+          <div className="flex items-center gap-1 shrink-0 bg-secondary/40 border border-border/30 rounded-lg px-2.5 py-1.5">
+            <span className="text-[10px] text-muted-foreground whitespace-nowrap">Spots a cada</span>
+            <div ref={newsIntervalRowRef} className="flex gap-0.5 pb-1">
+              {[1, 2, 3, 4, 5].map((n) => {
+                const isSpot = Number(settings.interval) === n;
+                const isNews = selectedCategories.size > 0 && newsInterval === n;
+                return (
+                  <div key={n} className="relative flex flex-col items-center h-6">
+                    <button type="button"
+                      title={`Spot a cada ${n} música${n !== 1 ? "s" : ""}`}
+                      className={`w-5 h-5 rounded text-[10px] font-bold transition-colors ${isSpot ? "bg-primary text-primary-foreground" : "bg-secondary/60 text-muted-foreground hover:bg-secondary"}`}
+                      onClick={() => handleIntervalChange(n)}
+                    >{n}</button>
+                    <span
+                      className={`absolute bottom-0 left-0 right-0 h-[2px] rounded-full bg-blue-400 cursor-grab active:cursor-grabbing transition-opacity ${isNews ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+                      title={`Notícia a cada ${n} música${n !== 1 ? "s" : ""} — arraste para mudar`}
+                      onMouseDown={isNews ? handleNewsDragStart : undefined}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+            <span className="text-[10px] text-muted-foreground whitespace-nowrap">músicas</span>
+          </div>
+
+          {isAdmin && (
+            <div className="relative shrink-0">
+              <button type="button" onClick={openDistribuir} disabled={broadcasting}
+                title="Selecionar destinatários para distribuição"
+                className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors disabled:opacity-50 min-w-[96px] justify-center ${distributionClients.size > 0 ? "border-primary/60 text-primary bg-primary/10" : "border-yellow-500/40 text-yellow-400 hover:bg-yellow-500/10"}`}>
+                {broadcasting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Key className="h-3 w-3" />}
+                Distribuir
+                <span className={`rounded-full text-[9px] font-bold w-4 h-4 flex items-center justify-center leading-none shrink-0 transition-opacity ${distributionClients.size > 0 ? "bg-primary text-primary-foreground opacity-100" : "opacity-0 pointer-events-none"}`}>
+                  {distributionClients.size || ""}
+                </span>
+              </button>
+              {showDistribuir && (
+                <DistribuirCard
+                  clients={clients}
+                  loadingClients={loadingClients}
+                  selectedClients={distributionClients}
+                  onChange={setDistributionClients}
+                  onClose={() => setShowDistribuir(false)}
+                />
+              )}
+            </div>
+          )}
           {spots.length > 0 && (
-            <button type="button" onClick={() => {
-              spots.forEach((s) => updateSpotConfig(s.id, { enabled: false }));
-              setConfigs(loadSpotConfigs()); invalidateSpotsCache();
-              const next = { ...settings, enabled: false };
-              setSettings(next); saveSpotSettings(next);
-              toast.success("Só músicas ativado.");
-            }} className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-border/60 text-muted-foreground hover:text-destructive hover:border-destructive/40 transition-colors">
+            <button type="button" onClick={handleSoMusicas}
+              className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-border/60 text-muted-foreground hover:text-destructive hover:border-destructive/40 transition-colors shrink-0">
               <BanIcon className="h-3 w-3" /> Só Músicas
             </button>
           )}
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs text-muted-foreground">{settings.enabled ? "Spots on" : "Spots off"}</span>
-            <button type="button" onClick={handleToggleEnabled} aria-label="Alternar spots"
-              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${settings.enabled ? "bg-primary" : "bg-muted"}`}>
-              <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${settings.enabled ? "translate-x-4.5" : "translate-x-0.5"}`} />
-            </button>
-          </div>
         </div>
+
+        {/* Direita: espaçador espelhado para centralizar os botões */}
+        <div className="flex-1" />
       </div>
 
       {/* ── Biblioteca de Spots ── */}
       <div className="bg-card rounded-xl border border-border/50 overflow-hidden">
-        <div className="px-4 py-2.5 bg-secondary/20 border-b border-border/30 flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
-            <Mic className="h-3.5 w-3.5 text-primary" />
-            <span className="text-xs font-semibold">Biblioteca de Spots</span>
-            {spots.length > 0 && <span className="text-xs text-muted-foreground">({filtered.length})</span>}
-          </div>
-          {filtered.length > 0 && (
-            <button type="button" onClick={toggleSelectAll} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
-              {selected.size === filtered.length ? "Desmarcar todos" : "Selecionar todos"}
-            </button>
+        <div className="px-4 py-2.5 bg-secondary/20 border-b border-border/30 flex items-center gap-1.5">
+          <Mic className="h-3.5 w-3.5 text-primary" />
+          <span className="text-xs font-semibold">Biblioteca de Anúncios</span>
+          {spots.length > 0 && <span className="text-xs text-muted-foreground">({filtered.length})</span>}
+          {filtered.length > 1 && (
+            <label className="flex items-center gap-1 ml-auto cursor-pointer select-none text-[10px] text-muted-foreground">
+              <input type="checkbox"
+                checked={selectedIds.size === filtered.length}
+                onChange={() => {
+                  if (selectedIds.size === filtered.length) {
+                    setSelectedIds(new Set());
+                  } else {
+                    setSelectedIds(new Set(filtered.map((s) => s.id)));
+                  }
+                }}
+                className="w-3.5 h-3.5 accent-primary cursor-pointer" />
+              Selecionar todos
+            </label>
           )}
         </div>
 
@@ -612,46 +1076,44 @@ const SpotsPanel = ({ userId: propUserId, onPreviewStart, onPreviewEnd }: SpotsP
           <input ref={fileInputRef} type="file" multiple className="hidden" aria-label="Selecionar spots"
             accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.opus" onChange={handleUpload} />
 
-          {/* Upload button compacto */}
-          <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploading}
-            className="w-full border border-dashed border-primary/40 rounded-lg py-3 flex items-center justify-center gap-2 hover:border-primary/70 hover:bg-primary/5 transition-all disabled:opacity-50 disabled:pointer-events-none">
-            {uploading ? (
-              <>
+          {/* Área de upload — visível para todos; bloqueada para cliente sem recurso */}
+          {uploading ? (
+            <div className="w-full border border-dashed border-primary/40 rounded-lg py-3 flex flex-col items-center justify-center gap-2">
+              <div className="flex items-center gap-2">
                 <Loader2 className="h-4 w-4 text-primary animate-spin" />
                 <span className="text-sm text-primary">{uploadProgress ? `Enviando ${uploadProgress.done}/${uploadProgress.total}…` : "Enviando…"}</span>
-              </>
-            ) : (
-              <>
-                <Upload className="h-4 w-4 text-primary" />
-                <span className="text-sm font-medium">Enviar Spot</span>
-                <span className="text-xs text-muted-foreground">MP3, WAV, OGG, M4A — vários de uma vez</span>
-              </>
-            )}
-          </button>
-
-          {uploading && uploadProgress && uploadProgress.total > 1 && (
-            <div className="h-1 bg-secondary rounded-full overflow-hidden">
-              <div className="h-full bg-primary rounded-full transition-all"
-                ref={(el) => { if (el) el.style.width = `${(uploadProgress.done / uploadProgress.total) * 100}%`; }} />
+              </div>
+              {uploadProgress && uploadProgress.total > 1 && (
+                <div className="w-full h-1 bg-secondary rounded-full overflow-hidden px-4">
+                  <div className="h-full bg-primary rounded-full transition-all"
+                    ref={(el) => { if (el) el.style.width = `${(uploadProgress.done / uploadProgress.total) * 100}%`; }} />
+                </div>
+              )}
             </div>
+          ) : !isAdmin && isUploadLocked ? (
+            <div className="w-full border border-dashed border-border/30 rounded-lg py-4 flex flex-col items-center justify-center gap-1.5 opacity-50 cursor-not-allowed">
+              <Lock className="h-5 w-5 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">Atualize seu plano para enviar spots</span>
+            </div>
+          ) : (
+            <button type="button" onClick={() => fileInputRef.current?.click()}
+              className={`w-full border border-dashed rounded-lg py-4 flex flex-col items-center justify-center gap-1.5 transition-colors group ${isAdmin && distributionClients.size > 0 ? "border-primary/50 bg-primary/5 hover:bg-primary/10" : "border-border/40 hover:border-primary/50"}`}>
+              <Upload className={`h-5 w-5 transition-colors ${isAdmin && distributionClients.size > 0 ? "text-primary" : "text-muted-foreground group-hover:text-primary"}`} />
+              <span className={`text-xs transition-colors ${isAdmin && distributionClients.size > 0 ? "text-primary font-medium" : "text-muted-foreground group-hover:text-primary"}`}>
+                {isAdmin && distributionClients.size > 0
+                  ? `Enviar para ${distributionClients.size} cliente${distributionClients.size !== 1 ? "s" : ""}`
+                  : "Clique para adicionar spots"}
+              </span>
+            </button>
           )}
 
           {spots.length > 0 && (
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input value={search} onChange={(e) => setSearch(e.target.value)}
-                placeholder="Buscar spot…" className="pl-8 h-8 text-sm bg-secondary/50" />
+                placeholder="Buscar"
+                className="pl-8 h-8 text-sm bg-secondary/50" />
             </div>
-          )}
-
-          {selected.size > 0 && (
-            <BulkBar count={selected.size}
-              onEnable={() => bulkConfigChange(selectedIds, { enabled: true })}
-              onDisable={() => bulkConfigChange(selectedIds, { enabled: false })}
-              onDelete={() => deleteSpots(selectedIds)}
-              onPriority={(p) => bulkConfigChange(selectedIds, { priority: p })}
-              onSchedule={(t) => bulkConfigChange(selectedIds, { scheduledAt: t })}
-              onClear={() => setSelected(new Set())} />
           )}
 
           {loading ? (
@@ -667,18 +1129,28 @@ const SpotsPanel = ({ userId: propUserId, onPreviewStart, onPreviewEnd }: SpotsP
           ) : filtered.length === 0 ? (
             <p className="text-center text-sm text-muted-foreground py-6">Nenhum spot encontrado para "{search}"</p>
           ) : (
-            <div className="space-y-2 max-h-[600px] overflow-y-auto pr-0.5">
+            <div className="space-y-3 max-h-[700px] overflow-y-auto pr-0.5">
               {filtered.map((spot) => (
                 <SpotRow key={spot.id} spot={spot}
                   cfg={configs[spot.id] ?? DEFAULT_SPOT_CONFIG}
-                  selected={selected.has(spot.id)}
-                  isPlaying={playingId === spot.id}
-                  previewProgress={playingId === spot.id ? previewProgress : 0}
-                  previewVolume={previewVolume}
-                  onSelect={() => toggleSelect(spot.id)}
-                  onPlayPause={() => handlePlayPause(spot)}
-                  onVolumeChange={handlePreviewVolume}
-                  onDelete={() => deleteSpots([spot.id])}
+                  isSelected={selectedIds.has(spot.id)}
+                  showOwner={isAdmin}
+                  onToggleSelect={() => setSelectedIds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(spot.id)) next.delete(spot.id); else next.add(spot.id);
+                    return next;
+                  })}
+                  isPreviewing={previewingId === spot.id}
+                  onPlaySpot={() => {
+                    if (previewingId === spot.id) {
+                      setPreviewingId(null);
+                      onPlaySpot?.({ id: "__stop__", title: "", file_path: "", genre: "stop" });
+                    } else {
+                      setPreviewingId(spot.id);
+                      onPlaySpot?.({ id: spot.id, title: spot.title, file_path: spot.file_path, genre: "spot" });
+                    }
+                  }}
+                  onDelete={() => deleteSpots(selectedIds.has(spot.id) && selectedIds.size > 1 ? Array.from(selectedIds) : [spot.id])}
                   onConfigChange={(patch) => handleConfigChange(spot.id, patch)}
                   onRename={(t) => handleRename(spot, t)}
                 />
@@ -687,6 +1159,48 @@ const SpotsPanel = ({ userId: propUserId, onPreviewStart, onPreviewEnd }: SpotsP
           )}
         </div>
       </div>
+
+      {/* ── Dialog de confirmação ── */}
+      <Dialog
+        open={confirmDialog.open}
+        onOpenChange={(open) => !open && setConfirmDialog((d) => ({ ...d, open: false }))}
+      >
+        <DialogContent className="max-w-sm bg-card border border-destructive/30 shadow-2xl rounded-2xl p-0 overflow-hidden">
+          <div className="px-6 pt-6 pb-2">
+            <DialogHeader>
+              <div className="flex items-center gap-3 mb-1">
+                <div className="w-9 h-9 rounded-full bg-destructive/15 flex items-center justify-center shrink-0">
+                  <Trash2 className="h-4 w-4 text-destructive" />
+                </div>
+                <DialogTitle className="text-base font-semibold">Confirmar exclusão</DialogTitle>
+              </div>
+              <DialogDescription className="text-sm text-muted-foreground leading-relaxed pl-12">
+                {confirmDialog.message}
+              </DialogDescription>
+            </DialogHeader>
+          </div>
+          <div className="flex gap-2 px-6 pb-5 pt-3">
+            <button
+              type="button"
+              onClick={() => setConfirmDialog((d) => ({ ...d, open: false }))}
+              className="flex-1 h-9 rounded-lg border border-border/60 text-sm text-muted-foreground hover:text-foreground hover:border-border transition-colors"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmDialog((d) => ({ ...d, open: false }));
+                confirmDialog.onConfirm();
+              }}
+              className="flex-1 h-9 rounded-lg bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 transition-colors"
+            >
+              Excluir
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
     </div>
   );
 };

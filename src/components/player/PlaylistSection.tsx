@@ -1,8 +1,11 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { useUserPreferences } from "@/hooks/useUserPreferences";
 import { useActivityTracker } from "@/hooks/useActivityTracker";
-import { Music, Play, Pause, Search, ArrowLeft, Link2, Loader2, Trash2, Check, X, Plus, Camera, Pencil, Move, Clock, Heart, Repeat, Shuffle } from "lucide-react";
+import { useClientFeatures } from "@/hooks/useClientFeatures";
+import { useIsAdmin } from "@/hooks/useIsAdmin";
+import { Music, Play, Pause, Search, ArrowLeft, Link2, Loader2, Trash2, Check, X, Plus, Camera, Pencil, Move, Clock, Heart, Repeat, Shuffle, Lock } from "lucide-react";
 import PlaylistScheduleDialog from "@/components/player/PlaylistScheduleDialog";
 const Youtube = ({ className }: { className?: string }) => (
   <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
@@ -12,11 +15,11 @@ const Youtube = ({ className }: { className?: string }) => (
 import SpeakerIcon from "./SpeakerIcon";
 import MoodFlow from "./MoodFlow";
 import { buildSmartQueue, markSongPlayed } from "@/hooks/useSmartShuffle";
-import { useServerQueue } from "@/hooks/useServerQueue";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
+import { authedFetch } from "@/lib/authedFetch";
 interface Song {
   id: string;
   title: string;
@@ -46,7 +49,7 @@ interface PlaylistSectionProps {
   onPause: () => void;
   onPlayImported?: (song: Song) => void;
   isYouTubeLoading?: boolean;
-  onQueueChange?: (songs: Song[], currentIndex: number, playlistId?: string) => void;
+  onQueueChange?: (songs: Song[], currentIndex: number, playlistId?: string) => void | Promise<void>;
   activePlaylistId?: string | null;
   onMoodActive?: (mood: any) => void;
   repeatPlaylistId?: string | null;
@@ -148,46 +151,72 @@ const sortPlaylistsByNewest = (items: Playlist[]) => {
   });
 };
 
+const PLAYLISTS_CACHE_KEY = "edu_playlists_cache";
+
+const loadCachedPlaylists = (): Playlist[] => {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(PLAYLISTS_CACHE_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw) as Playlist[];
+  } catch { return []; }
+};
+
 const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImported, isYouTubeLoading, onQueueChange, activePlaylistId, onMoodActive, repeatPlaylistId, onToggleRepeatPlaylist }: PlaylistSectionProps) => {
-  const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const cached = loadCachedPlaylists();
+  const [playlists, setPlaylists] = useState<Playlist[]>(cached);
   const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null);
   const [playlistSongs, setPlaylistSongs] = useState<PlaylistSong[]>([]);
   const [playlistSearch, setPlaylistSearch] = useState("");
   const [songSearch, setSongSearch] = useState("");
   const { trackSearch } = useActivityTracker();
-  const { buildQueue: buildServerQueue } = useServerQueue();
+  const { isFeatureLocked, consumeFeature } = useClientFeatures();
+  const { isAdmin } = useIsAdmin();
+  const { prefs, loaded: prefsLoaded, updatePref } = useUserPreferences();
+  const canDelete    = !isFeatureLocked("excluir_playlists");
+  const canFavPlaylist = !isFeatureLocked("favoritar_playlists");
+  const canFavSong     = !isFeatureLocked("curtir_musicas");
+  const canSchedule  = !isFeatureLocked("programar_playlists");
+  const canEditCover = !isFeatureLocked("alterar_capa");
+  const canEdit      = !isFeatureLocked("editar_playlist");
+  const canImport    = !isFeatureLocked("importar_playlists");
+
+  const [lockedCardId, setLockedCardId] = useState<string | null>(null);
+  const lockedBadgeTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showFeatureLocked = (e: React.MouseEvent, cardId: string) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setLockedCardId(cardId);
+    if (lockedBadgeTimer.current) clearTimeout(lockedBadgeTimer.current);
+    lockedBadgeTimer.current = setTimeout(() => setLockedCardId(null), 5000);
+  };
   const [hidePlaybackIndicatorsOnScroll, setHidePlaybackIndicatorsOnScroll] = useState(false);
   const randomCardRef = useRef<HTMLDivElement>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(cached.length === 0);
   const [loadingSongs, setLoadingSongs] = useState(false);
   const [loadingAllSongs, setLoadingAllSongs] = useState(false);
   const [randomPanelOpen, setRandomPanelOpen] = useState(false);
   const [randomPanelSearch, setRandomPanelSearch] = useState("");
-  const [randomSelectedIds, setRandomSelectedIds] = useState<string[]>(() => {
-    if (typeof window === "undefined") return [];
-    try { return JSON.parse(localStorage.getItem("random-selected-playlists") || "[]"); } catch { return []; }
-  });
+  const [randomSelectedIds, setRandomSelectedIds] = useState<string[]>([]);
   const randomClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toggleRandomSelected = useCallback((id: string) => {
     setRandomSelectedIds((prev) => {
       const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
-      localStorage.setItem("random-selected-playlists", JSON.stringify(next));
+      updatePref("random_playlists", next);
       return next;
     });
-  }, []);
-  const [favoritePlaylists, setFavoritePlaylists] = useState<string[]>(() => {
-    if (typeof window === "undefined") return [];
-    try { return JSON.parse(localStorage.getItem("favorite-playlists") || "[]"); } catch { return []; }
-  });
+  }, [updatePref]);
+  const [favoritePlaylists, setFavoritePlaylists] = useState<string[]>([]);
   const togglePlaylistFavorite = useCallback((id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
     setFavoritePlaylists((prev) => {
       const next = prev.includes(id) ? prev.filter((f) => f !== id) : [id, ...prev];
-      localStorage.setItem("favorite-playlists", JSON.stringify(next));
+      updatePref("fav_playlists", next);
       return next;
     });
-  }, []);
+  }, [updatePref]);
   
 
 
@@ -203,19 +232,16 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
   const [imageOffset, setImageOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [tempOffset, setTempOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [imageZoom, setImageZoom] = useState(1.1);
-  const [savedCoverStyles, setSavedCoverStyles] = useState<Record<string, { zoom: number; x: number; y: number }>>(() => {
-    if (typeof window === 'undefined') return {};
-    try { return JSON.parse(localStorage.getItem("playlist-cover-styles") || "{}"); } catch { return {}; }
-  });
+  const [savedCoverStyles, setSavedCoverStyles] = useState<Record<string, { zoom: number; x: number; y: number }>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadTargetId, setUploadTargetId] = useState<string | null>(null);
   const saveCoverStyle = useCallback((playlistId: string, zoom: number, x: number, y: number) => {
     setSavedCoverStyles((prev) => {
       const next = { ...prev, [playlistId]: { zoom, x, y } };
-      localStorage.setItem("playlist-cover-styles", JSON.stringify(next));
+      updatePref("playlist_cover_styles", next);
       return next;
     });
-  }, []);
+  }, [updatePref]);
   const [importOpen, setImportOpen] = useState(false);
   const [isFeaturedImport, setIsFeaturedImport] = useState(false);
   const [scheduleOpenImport, setScheduleOpenImport] = useState(false);
@@ -231,26 +257,46 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
   const [schedulePlaylist, setSchedulePlaylist] = useState<Playlist | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [userFavorites, setUserFavorites] = useState<Set<string>>(new Set());
+  const [hiddenPlaylistIds, setHiddenPlaylistIds] = useState<string[]>([]);
+  const hiddenPlaylistIdsRef = useRef<string[]>([]);
 
-  // Load favorites from localStorage (no auth required)
+  // Popula o ID do usuário logado
   useEffect(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem("edu_fav_songs") || "[]");
-      setUserFavorites(new Set(saved));
-    } catch {}
+    import("@/lib/supabase/client").then(({ supabase }) => {
+      supabase.auth.getUser().then(({ data }) => {
+        if (data.user) setCurrentUserId(data.user.id);
+      });
+    });
   }, []);
 
-  const toggleFavorite = (songId: string, _playlistId?: string) => {
+  // Sync prefs into local state when loaded
+  useEffect(() => {
+    if (!prefsLoaded) return;
+    setUserFavorites(new Set(prefs.fav_songs ?? []));
+    setFavoritePlaylists(prefs.fav_playlists ?? []);
+    setRandomSelectedIds(prefs.random_playlists ?? []);
+    setSavedCoverStyles(prefs.playlist_cover_styles ?? {});
+    const hidden = prefs.hidden_playlists ?? [];
+    setHiddenPlaylistIds(hidden);
+    hiddenPlaylistIdsRef.current = hidden;
+    // Re-filter playlists now that hidden IDs are known
+    fetchPlaylists();
+  }, [prefsLoaded]);
+
+  const toggleFavorite = async (songId: string, _playlistId?: string) => {
+    const isAdding = !userFavorites.has(songId);
+    if (isAdding) {
+      const ok = await consumeFeature("curtir_musicas");
+      if (!ok) return;
+    }
     setUserFavorites((prev) => {
       const next = new Set(prev);
       if (next.has(songId)) {
         next.delete(songId);
-        toast.success("Removido dos favoritos");
       } else {
         next.add(songId);
-        toast.success("Adicionado aos favoritos ❤️");
       }
-      localStorage.setItem("edu_fav_songs", JSON.stringify([...next]));
+      updatePref("fav_songs", [...next]);
       return next;
     });
   };
@@ -262,11 +308,16 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
   const fetchPlaylists = async () => {
     setLoading((prev) => prev || playlists.length === 0);
     try {
-      const res = await fetch("/api/playlists");
+      const res = await authedFetch("/api/playlists");
       const data = await res.json();
       const playlists = data.playlists ?? [];
       const uniqueById = Array.from(new Map(playlists.map((p: any) => [p.id, p])).values()) as any[];
-      setPlaylists(sortPlaylistsByNewest(uniqueById));
+      const sorted = sortPlaylistsByNewest(uniqueById);
+      // Filtra playlists ocultas pelo cliente (via prefs)
+      const hiddenIds = hiddenPlaylistIdsRef.current;
+      const visible = hiddenIds.length > 0 ? sorted.filter((p: any) => !hiddenIds.includes(p.id)) : sorted;
+      setPlaylists(visible);
+      try { localStorage.setItem(PLAYLISTS_CACHE_KEY, JSON.stringify(sorted)); } catch {}
     } catch {
       toast.error("Erro ao carregar playlists.");
     }
@@ -276,7 +327,7 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
   const fetchPlaylistSongs = async (playlistId: string) => {
     setLoadingSongs(true);
     try {
-      const res = await fetch(`/api/playlist-songs?playlist_id=${playlistId}`);
+      const res = await authedFetch(`/api/playlist-songs?playlist_id=${playlistId}`);
       const data = await res.json();
       const songs: PlaylistSong[] = (data.songs ?? []).map((s: any) => ({
         ...s,
@@ -341,7 +392,7 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
       const nextPlaylist = sorted[(currentIdx + 1) % sorted.length];
       if (!nextPlaylist || nextPlaylist.id === finishedId) return;
 
-      const res = await fetch(`/api/playlist-songs?playlist_id=${nextPlaylist.id}`);
+      const res = await authedFetch(`/api/playlist-songs?playlist_id=${nextPlaylist.id}`);
       const psData = await res.json();
       if (!psData.songs?.length) return;
 
@@ -350,7 +401,10 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
         isImported: s.file_path?.startsWith("imported/") || s.file_path?.startsWith("youtube:"),
       }));
 
-      const shuffled = buildSmartQueue(nextPlaylist.id, allSongs);
+      const seen2 = new Set<string>();
+      const shuffled = allSongs
+        .filter(s => { if (seen2.has(s.id)) return false; seen2.add(s.id); return true; })
+        .sort(() => Math.random() - 0.5);
       if (shuffled.length === 0) return;
 
       const firstSong = shuffled[0] as PlaylistSong;
@@ -377,11 +431,11 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
       if (currentRepoId && !target.closest(`[data-playlist-id="${currentRepoId}"]`)) {
         saveCoverStyle(currentRepoId, imageZoom, tempOffset.x, tempOffset.y);
         setRepositionId(null);
-        toast.success("Edição salva!");
+        toast.success("Edição salva!", { id: "edicao-salva" });
       }
       if (editingId && !target.closest(`[data-playlist-id="${editingId}"]`)) {
         saveEditing();
-        toast.success("Edição salva!");
+        toast.success("Edição salva!", { id: "edicao-salva" });
       }
     };
     const timer = setTimeout(() => {
@@ -400,7 +454,7 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
     if (!importUrl.trim()) return;
     setImporting(true);
     try {
-      const res = await fetch(`/api/import-playlist?action=preview&url=${encodeURIComponent(importUrl.trim())}`);
+      const res = await authedFetch(`/api/import-playlist?action=preview&url=${encodeURIComponent(importUrl.trim())}`);
       const data = await res.json();
       if (!res.ok || !data.preview) {
         toast.error(data.error ?? "Playlist não encontrada. Verifique o link.");
@@ -417,7 +471,7 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
     if (!importPreview) return;
     setImporting(true);
     try {
-      const res = await fetch("/api/import-playlist", {
+      const res = await authedFetch("/api/import-playlist", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -433,14 +487,13 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
         toast.error(data.error ?? "Erro ao importar playlist.");
       } else {
         if (isFeaturedImport) {
-          try {
-            const favKey = "edu_fav_playlists";
-            const saved = JSON.parse(localStorage.getItem(favKey) || "[]");
-            if (!saved.includes(data.playlist_id)) {
-              localStorage.setItem(favKey, JSON.stringify([...saved, data.playlist_id]));
+          {
+            const current = prefs.fav_playlists ?? [];
+            if (!current.includes(data.playlist_id)) {
+              updatePref("fav_playlists", [...current, data.playlist_id]);
             }
-          } catch {}
-          await fetch("/api/playlists", {
+          }
+          await authedFetch("/api/playlists", {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ id: data.playlist_id, is_featured: true }),
@@ -485,6 +538,7 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
           toast.success(`Playlist importada com ${data.songs_count} músicas!`);
         }
 
+        await consumeFeature("importar_playlists");
         setImportOpen(false);
         setPendingScheduleData(null);
         resetImportState();
@@ -492,7 +546,7 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
         // ❤️ ativo = reproduzir imediatamente após importar
         if (isFeaturedImport) {
           try {
-            const psRes = await fetch(`/api/playlist-songs?playlist_id=${data.playlist_id}`);
+            const psRes = await authedFetch(`/api/playlist-songs?playlist_id=${data.playlist_id}`);
             const psData = await psRes.json();
             if (psData.songs?.length > 0) {
               const songs: PlaylistSong[] = psData.songs.map((s: any) => ({
@@ -519,13 +573,15 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
     if (!searchQuery.trim()) return;
     setSearching(true);
     try {
-      const res = await fetch(`/api/import-playlist?action=search&q=${encodeURIComponent(searchQuery.trim())}`);
+      const res = await authedFetch(`/api/import-playlist?action=search&q=${encodeURIComponent(searchQuery.trim())}`);
       const data = await res.json();
       if (!res.ok) {
         toast.error(data.error ?? "Erro ao buscar playlists.");
       } else {
         setSearchResults(data.results ?? []);
-        if (!data.results?.length) toast.info("Nenhuma playlist encontrada.");
+        if (!data.results?.length) {
+          toast.info(data.error ?? "Nenhuma playlist musical encontrada. Tente buscar por gênero ou artista.");
+        }
       }
     } catch {
       toast.error("Erro ao buscar. Tente novamente.");
@@ -537,7 +593,7 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
     setImporting(true);
     setSearchResults([]);
     try {
-      const res = await fetch(`/api/import-playlist?action=playlist_by_id&id=${result.id}`);
+      const res = await authedFetch(`/api/import-playlist?action=playlist_by_id&id=${result.id}`);
       const data = await res.json();
       if (!res.ok || !data.preview) {
         toast.error(data.error ?? "Erro ao carregar playlist.");
@@ -558,15 +614,34 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
   const handleDeletePlaylist = async (playlist: Playlist, e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
-    await fetch("/api/playlist-songs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ playlist_id: playlist.id }) });
-    const res = await fetch("/api/playlists", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: playlist.id }) });
+
+    if (!isAdmin) {
+      // Verifica créditos antes
+      if (!canDelete) { toast.error("Recurso bloqueado. Atualize seu plano."); return; }
+      const ok = await consumeFeature("excluir_playlists");
+      if (!ok) return;
+      // Clientes apenas ocultam da biblioteca — nunca deletam do banco
+      const newHidden = hiddenPlaylistIds.includes(playlist.id)
+        ? hiddenPlaylistIds
+        : [...hiddenPlaylistIds, playlist.id];
+      setHiddenPlaylistIds(newHidden);
+      hiddenPlaylistIdsRef.current = newHidden;
+      updatePref("hidden_playlists", newHidden);
+      setPlaylists((prev) => prev.filter((p) => p.id !== playlist.id));
+      // Sem toast — música/playlist some silenciosamente da lista do cliente
+      if (selectedPlaylist?.id === playlist.id) setSelectedPlaylist(null);
+      return;
+    }
+
+    // Admin: delete real do banco
+    await authedFetch("/api/playlist-songs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ playlist_id: playlist.id }) });
+    const res = await authedFetch("/api/playlists", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: playlist.id }) });
     if (!res.ok) {
       toast.error("Erro ao excluir playlist.");
     } else {
       setPlaylists((prev) => prev.filter((p) => p.id !== playlist.id));
       toast.success(`"${playlist.name}" removida.`);
       if (selectedPlaylist?.id === playlist.id) setSelectedPlaylist(null);
-      // Dispara evento imediato para o player limpar a fila sem esperar o Supabase realtime
       window.dispatchEvent(new CustomEvent("playlist-force-delete", { detail: { playlistId: playlist.id } }));
     }
   };
@@ -574,18 +649,21 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
   const startEditing = (playlist: Playlist, e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
+    if (!canEdit) return;
     setEditingId(playlist.id);
     setEditingName(playlist.name);
     setTimeout(() => editInputRef.current?.focus(), 50);
   };
   const saveEditing = async () => {
     if (!editingId || !editingName.trim()) { setEditingId(null); return; }
+    if (!canEdit) { setEditingId(null); toast.warning("Atualize seu plano para editar playlists."); return; }
     const cleaned = cleanPlaylistName(editingName);
-    const res = await fetch("/api/playlists", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: editingId, name: cleaned }) });
+    const res = await authedFetch("/api/playlists", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: editingId, name: cleaned }) });
     if (!res.ok) {
       toast.error("Erro ao renomear.");
     } else {
       setPlaylists((prev) => prev.map((p) => p.id === editingId ? { ...p, name: cleaned } : p));
+      await consumeFeature("editar_playlist");
     }
     setEditingId(null);
   };
@@ -593,6 +671,7 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
   const triggerImageUpload = (playlistId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
+    if (!canEditCover) { showFeatureLocked(e, playlistId); return; }
     setUploadTargetId(playlistId);
     fileInputRef.current?.click();
   };
@@ -600,6 +679,7 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
     const file = e.target.files?.[0];
     e.target.value = ""; // reset so same file can be reselected
     if (!file || !uploadTargetId) return;
+    if (!canEditCover) { toast.error("Recurso bloqueado. Atualize seu plano."); return; }
     if (!file.type.startsWith("image/")) { toast.error("Selecione uma imagem."); return; }
     if (file.size > 5 * 1024 * 1024) { toast.error("Imagem deve ter no máximo 5MB."); return; }
 
@@ -607,11 +687,12 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
     const targetId = uploadTargetId;
     reader.onload = async () => {
       const coverUrl = reader.result as string;
-      const res = await fetch("/api/playlists", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: targetId, cover_url: coverUrl }) });
+      const res = await authedFetch("/api/playlists", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: targetId, cover_url: coverUrl }) });
       if (!res.ok) {
         toast.error("Erro ao atualizar capa.");
       } else {
         setPlaylists((prev) => prev.map((p) => p.id === targetId ? { ...p, cover_url: coverUrl } : p));
+        await consumeFeature("alterar_capa");
         toast.success("Capa atualizada!");
       }
     };
@@ -627,7 +708,7 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
       setRepositionId(null);
       // Also save name if editing
       if (editingId === playlistId) saveEditing();
-      toast.success("Edição salva!");
+      toast.success("Edição salva!", { id: "edicao-salva" });
       return;
     }
     const saved = savedCoverStyles[playlistId];
@@ -672,7 +753,7 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
         : playlists;
       const allResults = await Promise.all(
         activePlaylists.map(async (p) => {
-          const res = await fetch(`/api/playlist-songs?playlist_id=${p.id}`);
+          const res = await authedFetch(`/api/playlist-songs?playlist_id=${p.id}`);
           const data = await res.json();
           return (data.songs ?? []).map((s: any) => ({
             ...s,
@@ -889,26 +970,31 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
                       </p>
                     </div>
                     <button
-                      onClick={(e) => { e.stopPropagation(); toggleFavorite(song.id, selectedPlaylist?.id); }}
+                      onClick={(e) => { e.stopPropagation(); canFavSong ? toggleFavorite(song.id, selectedPlaylist?.id) : showFeatureLocked(e, selectedPlaylist?.id ?? "selected"); }}
+                      title={userFavorites.has(song.id) ? "Remover dos favoritos" : "Favoritar"}
                       className={`w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center shrink-0 transition-all ${
                         userFavorites.has(song.id)
                           ? "text-red-500 hover:text-red-400"
                           : "text-muted-foreground hover:text-red-400 opacity-0 group-hover/song:opacity-100"
                       }`}
-                      title={userFavorites.has(song.id) ? "Remover dos favoritos" : "Favoritar"}
                     >
                       <Heart className={`h-2.5 w-2.5 ${userFavorites.has(song.id) ? "fill-current" : ""}`} />
                     </button>
                     <button
-                      onClick={() => {
-                        // Hide song locally via localStorage
-                        const key = `edu_hidden_${selectedPlaylist?.id}`;
-                        try {
-                          const hidden = JSON.parse(localStorage.getItem(key) || "[]");
-                          if (!hidden.includes(song.id)) { hidden.push(song.id); localStorage.setItem(key, JSON.stringify(hidden)); }
-                        } catch {}
+                      onClick={async () => {
+                        if (!isAdmin && isFeatureLocked("excluir_musicas")) { toast.error("Recurso bloqueado. Atualize seu plano."); return; }
+                        if (!isAdmin) { const ok = await consumeFeature("excluir_musicas"); if (!ok) return; }
+                        // Hide song via playlist_song_favs (hidden_songs sub-key)
+                        if (selectedPlaylist?.id) {
+                          const allFavs = { ...(prefs.playlist_song_favs ?? {}) };
+                          const hiddenKey = `hidden_${selectedPlaylist.id}`;
+                          const hidden: string[] = allFavs[hiddenKey] ?? [];
+                          if (!hidden.includes(song.id)) {
+                            allFavs[hiddenKey] = [...hidden, song.id];
+                            updatePref("playlist_song_favs", allFavs);
+                          }
+                        }
                         setPlaylistSongs((prev) => prev.filter((s) => s.id !== song.id));
-                        toast.success("Música ocultada da sua lista.");
                       }}
                       className="w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center shrink-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover/song:opacity-100 transition-all"
                       title="Remover da playlist"
@@ -1017,7 +1103,7 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
                         )}
                       </div>
                     )}
-                    <Button onClick={handleConfirmImport} disabled={importing} className="w-full gap-2" size="sm">
+                    <Button onClick={canImport ? handleConfirmImport : () => toast.warning("Atualize seu plano para importar playlists.")} disabled={importing} className="w-full gap-2" size="sm">
                       {importing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
                       {importing ? "Importando..." : "Confirmar Importação"}
                     </Button>
@@ -1136,17 +1222,7 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
                 <div className="absolute top-2 right-2 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button
                     type="button"
-                    onClick={(e) => togglePlaylistFavorite("all-random", e)}
-                    title={favSet.has("all-random") ? "Remover dos favoritos" : "Favoritar"}
-                    className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full backdrop-blur-sm flex items-center justify-center transition-colors ${
-                      favSet.has("all-random") ? "bg-red-500 text-white" : "bg-background/80 text-muted-foreground hover:text-red-400 hover:bg-background"
-                    }`}
-                  >
-                    <Heart className="h-3.5 w-3.5" fill={favSet.has("all-random") ? "currentColor" : "none"} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); e.preventDefault(); setSchedulePlaylist({ id: "all-random", name: "Aleatório", description: null, cover_url: null, is_public: false, created_by: null, created_at: "" } as any); }}
+                    onClick={(e) => { e.stopPropagation(); e.preventDefault(); canSchedule ? setSchedulePlaylist({ id: "all-random", name: "Aleatório", description: null, cover_url: null, is_public: false, created_by: null, created_at: "" } as any) : showFeatureLocked(e, "all-random"); }}
                     title="Programar horário"
                     className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-background/80 backdrop-blur-sm flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-background transition-colors"
                   >
@@ -1223,7 +1299,7 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
                     <div className="px-2 pb-2 shrink-0">
                       <button
                         type="button"
-                        onClick={() => { setRandomSelectedIds([]); localStorage.setItem("random-selected-playlists", "[]"); }}
+                        onClick={() => { setRandomSelectedIds([]); updatePref("random_playlists", []); }}
                         className="text-[10px] text-white/50 hover:text-white/80 underline"
                       >
                         Limpar seleção
@@ -1237,6 +1313,13 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
                   <Loader2 className="h-6 w-6 text-white animate-spin" />
                 </div>
               )}
+              {/* Badge de recurso bloqueado — dentro do card */}
+              <div className={`absolute inset-0 flex items-center justify-center z-50 pointer-events-none transition-all duration-300 ${lockedCardId === "all-random" ? "opacity-100" : "opacity-0"}`}>
+                <div className="flex items-center gap-1 bg-background/95 backdrop-blur-sm border border-border/50 rounded-full px-2 py-1 shadow-md mx-2">
+                  <Lock className="h-2.5 w-2.5 text-primary shrink-0" />
+                  <p className="text-[10px] font-medium text-foreground leading-tight text-center">Atualize seu plano para usar esse recurso.</p>
+                </div>
+              </div>
             </div>
           )}
           {sortedFilteredPlaylists.map((playlist) => {
@@ -1269,26 +1352,20 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
                     clickTimerRef.current = setTimeout(async () => {
                       clickTimerRef.current = null;
 
-                      // Servidor monta a fila completa (músicas + spots intercalados)
-                      const serverQueue = await buildServerQueue({ playlistId: playlist.id });
-
-                      // Fallback: se servidor falhar, usa lógica local
+                      // Monta fila local (músicas da playlist)
                       let finalQueue: PlaylistSong[] = [];
-                      if (serverQueue.length > 0) {
-                        // Embaralha as músicas (excluindo spots) para não tocar sempre a primeira
-                        const songs = serverQueue.filter(s => (s as any).item_type !== "spot") as PlaylistSong[];
-                        const shuffled = buildSmartQueue(playlist.id, songs) as PlaylistSong[];
-                        finalQueue = shuffled.length > 0 ? shuffled : (serverQueue as PlaylistSong[]);
-                      } else {
-                        const psRes = await fetch(`/api/playlist-songs?playlist_id=${playlist.id}`);
-                        const psData = await psRes.json();
-                        if (psData.songs?.length > 0) {
-                          const allSongs: PlaylistSong[] = psData.songs.map((s: any) => ({
-                            ...s,
-                            isImported: s.file_path?.startsWith("imported/") || s.file_path?.startsWith("youtube:"),
-                          }));
-                          finalQueue = buildSmartQueue(playlist.id, allSongs) as PlaylistSong[];
-                        }
+                      const psRes = await authedFetch(`/api/playlist-songs?playlist_id=${playlist.id}`);
+                      const psData = await psRes.json();
+                      if (psData.songs?.length > 0) {
+                        const allSongs: PlaylistSong[] = psData.songs.map((s: any) => ({
+                          ...s,
+                          isImported: s.file_path?.startsWith("imported/") || s.file_path?.startsWith("youtube:"),
+                        }));
+                        // Mesma lógica do código antigo: shuffle aleatório simples (evita repetição por ordem)
+                        const seen = new Set<string>();
+                        finalQueue = allSongs
+                          .filter(s => { if (seen.has(s.id)) return false; seen.add(s.id); return true; })
+                          .sort(() => Math.random() - 0.5) as PlaylistSong[];
                       }
 
                       if (finalQueue.length > 0) {
@@ -1365,7 +1442,7 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
                         <div className="absolute top-2 right-2 flex items-center gap-1.5">
                           <button
                             type="button"
-                            onClick={(e) => togglePlaylistFavorite(playlist.id, e)}
+                            onClick={(e) => canFavPlaylist ? togglePlaylistFavorite(playlist.id, e) : showFeatureLocked(e, playlist.id)}
                             title={favSet.has(playlist.id) ? "Remover dos favoritos" : "Favoritar"}
                             className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full backdrop-blur-sm flex items-center justify-center transition-colors ${
                               favSet.has(playlist.id)
@@ -1376,30 +1453,32 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
                             <Heart className="h-3.5 w-3.5" fill={favSet.has(playlist.id) ? "currentColor" : "none"} />
                           </button>
                           <button
-                            onClick={(e) => handleDeletePlaylist(playlist, e)}
+                            type="button"
+                            onClick={(e) => canDelete ? handleDeletePlaylist(playlist, e) : showFeatureLocked(e, playlist.id)}
                             className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-background/80 backdrop-blur-sm flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-background transition-colors"
                             title="Excluir"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
                           <button
-                            onClick={(e) => { e.stopPropagation(); e.preventDefault(); setSchedulePlaylist(playlist); }}
+                            onClick={(e) => { e.stopPropagation(); e.preventDefault(); canSchedule ? setSchedulePlaylist(playlist) : showFeatureLocked(e, playlist.id); }}
                             className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-background/80 backdrop-blur-sm flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-background transition-colors"
                             title="Programar horário"
                           >
                             <Clock className="h-3.5 w-3.5" />
                           </button>
                           <button
-                            onClick={(e) => triggerImageUpload(playlist.id, e)}
+                            onClick={(e) => canEditCover ? triggerImageUpload(playlist.id, e) : showFeatureLocked(e, playlist.id)}
                             className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-background/80 backdrop-blur-sm flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-background transition-colors"
                             title="Trocar capa"
                           >
                             <Camera className="h-3.5 w-3.5" />
                           </button>
                           <button
-                            onClick={(e) => startReposition(playlist.id, e)}
+                            type="button"
+                            onClick={(e) => (canEdit || canEditCover) ? (() => { if (canEdit) startEditing(playlist, e); startReposition(playlist.id, e); })() : showFeatureLocked(e, playlist.id)}
                             className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-background/80 backdrop-blur-sm flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-background transition-colors"
-                            title="Mover e ajustar capa"
+                            title="Editar playlist"
                           >
                             <Pencil className="h-3.5 w-3.5" />
                           </button>
@@ -1427,6 +1506,8 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
                           <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
                             <input
                               ref={editInputRef}
+                              title="Nome da playlist"
+                              aria-label="Nome da playlist"
                               value={editingName}
                               onChange={(e) => setEditingName(e.target.value)}
                               onKeyDown={(e) => {
@@ -1455,6 +1536,13 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
                     </div>
                   </div>
                 {isExpanded && renderExpandedPanel()}
+                {/* Badge de recurso bloqueado — dentro do card */}
+                <div className={`absolute inset-0 flex items-center justify-center z-50 pointer-events-none transition-all duration-300 ${lockedCardId === playlist.id ? "opacity-100" : "opacity-0"}`}>
+                  <div className="flex items-center gap-1 bg-background/95 backdrop-blur-sm border border-border/50 rounded-full px-2 py-1 shadow-md mx-2">
+                    <Lock className="h-2.5 w-2.5 text-primary shrink-0" />
+                    <p className="text-[10px] font-medium text-foreground leading-tight text-center">Atualize seu plano para usar esse recurso.</p>
+                  </div>
+                </div>
               </div>
               </React.Fragment>
             );

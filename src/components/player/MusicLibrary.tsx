@@ -5,6 +5,7 @@ import { Music, Play, Pause, Search, Trash2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import EduLogoIcon from "@/components/player/EduLogoIcon";
+import { authedFetch } from "@/lib/authedFetch";
 
 interface Song {
   id: string;
@@ -53,7 +54,7 @@ const MusicLibrary = ({ currentSong, isPlaying, onPlay, onPause, onQueueChange }
   const fetchSongs = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/songs");
+      const res = await authedFetch("/api/songs");
       const data = await res.json();
       setSongs(data.songs ?? []);
     } catch {
@@ -81,7 +82,7 @@ const MusicLibrary = ({ currentSong, isPlaying, onPlay, onPause, onQueueChange }
 
   const handleDelete = async (song: Song) => {
     try {
-      await fetch("/api/songs", {
+      await authedFetch("/api/songs", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: song.id }),

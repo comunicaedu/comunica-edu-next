@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { Music, Pencil, Trash2, Check, X, Loader2, Search, Image, ListMusic, Plus, Play, Pause, Volume2, FolderInput, Tag, Upload } from "lucide-react";
 import MusicUpload from "@/components/player/MusicUpload";
 import AdminMiniTransport from "./AdminMiniTransport";
+import { authedFetch } from "@/lib/authedFetch";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -190,8 +191,8 @@ const PlaylistManagement = () => {
     setLoading(true);
     try {
       const [plRes, psRes] = await Promise.all([
-        fetch("/api/playlists").then((r) => r.json()),
-        fetch("/api/playlist-songs").then((r) => r.json()),
+        authedFetch("/api/playlists").then((r) => r.json()),
+        authedFetch("/api/playlist-songs").then((r) => r.json()),
       ]);
       const playlistsData = plRes.playlists ?? [];
       const joins: { playlist_id: string }[] = psRes.joins ?? [];
@@ -226,7 +227,7 @@ const PlaylistManagement = () => {
     setEditingSongId(null);
     fetchMoveTargets();
     try {
-      const res = await fetch(`/api/playlist-songs?playlist_id=${playlist.id}`);
+      const res = await authedFetch(`/api/playlist-songs?playlist_id=${playlist.id}`);
       const data = await res.json();
       setPlaylistSongs(data.songs ?? []);
     } catch {
@@ -240,9 +241,9 @@ const PlaylistManagement = () => {
   const fetchMoveTargets = useCallback(async () => {
     try {
       const [songsRes, plRes, psRes] = await Promise.all([
-        fetch("/api/songs").then((r) => r.json()),
-        fetch("/api/playlists").then((r) => r.json()),
-        fetch("/api/playlist-songs").then((r) => r.json()),
+        authedFetch("/api/songs").then((r) => r.json()),
+        authedFetch("/api/playlists").then((r) => r.json()),
+        authedFetch("/api/playlist-songs").then((r) => r.json()),
       ]);
       const gMap: Record<string, number> = {};
       (songsRes.songs ?? []).forEach((s: { genre: string | null }) => {
@@ -261,7 +262,7 @@ const PlaylistManagement = () => {
   const handleRenameSong = async (song: SongInPlaylist) => {
     if (!editSongName.trim() || editSongName.trim() === song.title) { setEditingSongId(null); return; }
     const newTitle = editSongName.trim();
-    const res = await fetch("/api/songs", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: song.id, title: newTitle }) });
+    const res = await authedFetch("/api/songs", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: song.id, title: newTitle }) });
     if (!res.ok) toast.error("Erro ao renomear.");
     else {
       setPlaylistSongs(prev => prev.map(s => s.id === song.id ? { ...s, title: newTitle } : s));
@@ -273,7 +274,7 @@ const PlaylistManagement = () => {
   // Move to genre
   const handleMoveToGenre = async (song: SongInPlaylist, targetGenre: string) => {
     const newGenre = targetGenre === "Sem Gênero" ? null : targetGenre;
-    const res = await fetch("/api/songs", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: song.id, genre: newGenre }) });
+    const res = await authedFetch("/api/songs", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: song.id, genre: newGenre }) });
     if (!res.ok) { toast.error("Erro ao mover."); return; }
     toast.success(`"${song.title}" gênero alterado para ${targetGenre}.`);
     setMovingSongId(null);
@@ -283,8 +284,8 @@ const PlaylistManagement = () => {
   const handleMoveToPlaylist = async (song: SongInPlaylist, targetPlaylistId: string, targetName: string) => {
     if (selectedPlaylist && targetPlaylistId === selectedPlaylist.id) { setMovingSongId(null); return; }
     try {
-      await fetch("/api/playlist-songs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ playlist_id: targetPlaylistId, song_ids: [song.id] }) });
-      await fetch("/api/playlist-songs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: song.playlist_song_id }) });
+      await authedFetch("/api/playlist-songs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ playlist_id: targetPlaylistId, song_ids: [song.id] }) });
+      await authedFetch("/api/playlist-songs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: song.playlist_song_id }) });
       setPlaylistSongs(prev => prev.filter(s => s.playlist_song_id !== song.playlist_song_id));
       if (selectedPlaylist) {
         setPlaylists(prev => prev.map(p => {
@@ -303,8 +304,8 @@ const PlaylistManagement = () => {
     if (!confirm(`Excluir PERMANENTEMENTE "${song.title}"?`)) return;
     setDeletingSongId(song.id);
     try {
-      await fetch("/api/playlist-songs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ song_id: song.id }) });
-      await fetch("/api/songs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: song.id }) });
+      await authedFetch("/api/playlist-songs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ song_id: song.id }) });
+      await authedFetch("/api/songs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: song.id }) });
       if (playingSongId === song.id) stopAudio();
       setPlaylistSongs(prev => prev.filter(s => s.id !== song.id));
       if (selectedPlaylist) {
@@ -320,7 +321,7 @@ const PlaylistManagement = () => {
   const handleSaveName = async (id: string) => {
     if (!editName.trim()) return;
     setSaving(true);
-    const res = await fetch("/api/playlists", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, name: editName.trim() }) });
+    const res = await authedFetch("/api/playlists", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, name: editName.trim() }) });
     if (!res.ok) toast.error("Erro ao renomear.");
     else {
       toast.success("Nome atualizado!");
@@ -332,8 +333,8 @@ const PlaylistManagement = () => {
   const handleDeletePlaylist = async (id: string) => {
     if (!confirm("Excluir esta playlist e todas as associações?")) return;
     setDeletingId(id);
-    await fetch("/api/playlist-songs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ playlist_id: id }) });
-    const res = await fetch("/api/playlists", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
+    await authedFetch("/api/playlist-songs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ playlist_id: id }) });
+    const res = await authedFetch("/api/playlists", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
     if (!res.ok) toast.error("Erro ao excluir playlist.");
     else { toast.success("Playlist excluída!"); setPlaylists(prev => prev.filter(p => p.id !== id)); }
     setDeletingId(null);
@@ -345,7 +346,7 @@ const PlaylistManagement = () => {
     const reader = new FileReader();
     reader.onload = async () => {
       const coverUrl = reader.result as string;
-      const res = await fetch("/api/playlists", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, cover_url: coverUrl }) });
+      const res = await authedFetch("/api/playlists", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, cover_url: coverUrl }) });
       if (!res.ok) toast.error("Erro ao salvar capa.");
       else { toast.success("Capa atualizada!"); setPlaylists(prev => prev.map(p => p.id === id ? { ...p, cover_url: coverUrl } : p)); }
       setUploadingCoverId(null);

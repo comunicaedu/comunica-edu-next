@@ -110,7 +110,7 @@ export const usePlaylistScheduleAutomation = ({
       let closest: number | null = null;
 
       for (const s of schedules) {
-        if (!s.is_active || !s.days_of_week?.length) continue;
+        if (!(s.is_active ?? s.active ?? false) || !s.days_of_week?.length) continue;
 
         const today = now.getDay();
         if (!s.days_of_week.includes(today)) continue;
@@ -163,9 +163,8 @@ export const usePlaylistScheduleAutomation = ({
       try {
         const { data, error } = await supabase
           .from("playlist_schedules")
-          .select("id, playlist_id, start_time, end_time, days_of_week, is_active, updated_at, start_date, end_date, scheduled_volume")
-          .eq("is_active", true)
-          .order("updated_at", { ascending: false });
+          .select("id, playlist_id, start_time, end_time, days_of_week, active, start_date, end_date, scheduled_volume")
+          .eq("active", true);
 
         if (error) {
           console.error("Erro ao buscar agendamentos:", error.message);

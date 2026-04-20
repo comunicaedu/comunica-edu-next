@@ -2,13 +2,17 @@
 
 import { useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase/client";
+import { isYouTubeQuotaExhausted, markYouTubeQuotaExhausted, isQuotaError } from "@/lib/youtubeQuota";
+import { authedFetch } from "@/lib/authedFetch";
 
 /**
  * AudioCascade — resolves the best audio source for a song.
  *
  * Priority:
- *   1. Supabase Storage (local MP3/WAV)
- *   2. YouTube IFrame (fallback)
+ *   1. Supabase Storage (uploaded MP3/WAV)  ← sempre primeiro
+ *   2. Offline cache (YouTube pré-baixado)  ← local, sem internet
+ *   3. YouTube IFrame com ID conhecido      ← sem custo de cota
+ *   4. YouTube Search API                   ← só se cota disponível
  *
  * Also enriches metadata (cover/title) from existing DB data.
  */
@@ -83,28 +87,83 @@ export const useAudioCascade = () => {
         ? song.youtube_video_id
         : null;
 
-    // Level 1: Local Supabase Storage — return URL immediately, no HEAD request
+    // Level 1: Local Supabase Storage — ALWAYS first priority (uploaded MP3/WAV)
     const localUrl = getStorageUrl(song.file_path);
     if (localUrl) {
       return { type: "local", url: localUrl };
     }
 
-    // Level 2: Cached YouTube video ID
+    // Level 2a: YouTube audio downloaded locally (offline cache) — only if no MP3 in storage
     if (cachedVideoId) {
-      return { type: "youtube", videoId: cachedVideoId };
+      try {
+        const res = await authedFetch(`/api/cache-audio?videoId=${cachedVideoId}`);
+        const data = await res.json();
+        if (data.cached && data.file_path) {
+          return { type: "local", url: data.file_path };
+        }
+      } catch {
+        // offline check failed — continue to next level
+      }
     }
 
-    // Level 3: Search YouTube (only when there is truly no local file)
-    try {
-      const { data, error } = await supabase.functions.invoke("youtube-search", {
-        body: { title: song.title, artist: song.artist, songId: song.id },
-      });
-
-      if (!error && data?.videoId) {
-        return { type: "youtube", videoId: data.videoId };
+    // Level 2b: Cached YouTube video ID — valida duração e título antes de usar
+    // Impede que vídeos longos, anúncios e compilações já salvos no banco entrem na fila
+    if (cachedVideoId) {
+      try {
+        const vRes = await authedFetch(`/api/validate-youtube?videoId=${cachedVideoId}`);
+        const vData = await vRes.json();
+        if (vData.valid) {
+          return { type: "youtube", videoId: cachedVideoId };
+        }
+        // Inválido (longo, anúncio, etc.) → limpa do banco e busca substituto
+        supabase
+          .from("songs")
+          .update({ youtube_video_id: null })
+          .eq("youtube_video_id", cachedVideoId)
+          .then(() => {});
+      } catch {
+        // Falha na validação → usa o ID sem bloquear (melhor tocar do que silêncio)
+        return { type: "youtube", videoId: cachedVideoId };
       }
-    } catch {
-      // YouTube search failed
+    }
+
+    // Spots nunca vão para o YouTube — se chegou até aqui é um erro, retorna none
+    if (song.genre === "spot") return { type: "none" };
+
+    // Level 3: Search YouTube — skipped when quota is exhausted (search API only)
+    if (!isYouTubeQuotaExhausted()) {
+      try {
+        const params = new URLSearchParams({ title: song.title });
+        if (song.artist) params.set("artist", song.artist);
+        if (song.genre)  params.set("genre",  song.genre);
+        const res = await authedFetch(`/api/youtube-search?${params.toString()}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.quotaExceeded || isQuotaError(String(data?.error ?? ""))) {
+            markYouTubeQuotaExhausted();
+          } else if (data?.videoId) {
+            return { type: "youtube", videoId: data.videoId };
+          }
+        } else if (res.status === 429) {
+          markYouTubeQuotaExhausted();
+        }
+      } catch {
+        // YouTube search failed — fallback to Supabase function
+        if (!isYouTubeQuotaExhausted()) {
+          try {
+            const { data, error } = await supabase.functions.invoke("youtube-search", {
+              body: { title: song.title, artist: song.artist, songId: song.id },
+            });
+            if (error && isQuotaError(String(error?.message ?? error))) {
+              markYouTubeQuotaExhausted();
+            } else if (!error && data?.videoId) {
+              return { type: "youtube", videoId: data.videoId };
+            }
+          } catch {
+            // both failed
+          }
+        }
+      }
     }
 
     return { type: "none" };
@@ -126,12 +185,30 @@ export const useAudioCascade = () => {
 
     checkingRef.current.add(song.id);
     try {
-      const { data, error } = await supabase.functions.invoke("youtube-search", {
-        body: { title: song.title, artist: song.artist, songId: song.id },
-      });
+      // Skip YouTube search entirely when quota is exhausted
+      if (isYouTubeQuotaExhausted()) return null;
 
-      if (!error && data?.videoId) {
-        return data.videoId as string;
+      const params = new URLSearchParams({ title: song.title });
+      if (song.artist) params.set("artist", song.artist);
+      const res = await authedFetch(`/api/youtube-search?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.quotaExceeded || isQuotaError(String(data?.error ?? ""))) {
+          markYouTubeQuotaExhausted(); return null;
+        }
+        if (data?.videoId) return data.videoId as string;
+      } else if (res.status === 429) {
+        markYouTubeQuotaExhausted(); return null;
+      }
+      // Fallback to Supabase function
+      if (!isYouTubeQuotaExhausted()) {
+        const { data, error } = await supabase.functions.invoke("youtube-search", {
+          body: { title: song.title, artist: song.artist, songId: song.id },
+        });
+        if (error && isQuotaError(String(error?.message ?? error))) {
+          markYouTubeQuotaExhausted(); return null;
+        }
+        if (!error && data?.videoId) return data.videoId as string;
       }
     } catch {
       // no-op
@@ -141,5 +218,5 @@ export const useAudioCascade = () => {
     return null;
   }, []);
 
-  return { resolve, preResolve, isStorageAvailable };
+  return { resolve, preResolve, isStorageAvailable, getStorageUrl };
 };

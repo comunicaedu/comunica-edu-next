@@ -7,14 +7,20 @@ import {
   CalendarClock,
   Loader2,
   Clock3,
-  WandSparkles,
+  Settings2,
   ListMusic,
   Play,
   Pause,
   CheckCircle2,
   Search,
+  Check,
+  Link2,
+  Volume2,
+  User,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
+import { Switch } from "@/components/ui/switch";
+import { ALL_CLIENT_FEATURES } from "@/hooks/useClientFeatures";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -38,10 +44,29 @@ interface PlaylistItem {
   songCount?: number;
 }
 
+interface ScheduledSpotItem {
+  spotId: string;
+  spotTitle: string;
+  userId: string;
+  scheduleStart: string | null;
+  scheduleEnd: string | null;
+}
+
+const getSpotStatus = (item: ScheduledSpotItem, now: Date): ScheduleStatus => {
+  const today = now.toISOString().slice(0, 10);
+  // scheduleStart/End are datetimes ("2026-04-12T18:51") — extract date-only for comparison
+  const start = item.scheduleStart ? item.scheduleStart.slice(0, 10) : null;
+  const end   = item.scheduleEnd   ? item.scheduleEnd.slice(0, 10)   : null;
+  if (end && today > end) return "concluida";
+  if (start && today < start) return "agendada";
+  if ((!start || today >= start) && (!end || today <= end)) return "executando";
+  return "agendada";
+};
+
 type ScheduleStatus = "agendada" | "executando" | "concluida" | "desativada";
 
 const getScheduleStatus = (schedule: ScheduleWindow, now: Date): ScheduleStatus => {
-  if (!schedule.is_active) return "desativada";
+  if (!(schedule.is_active ?? schedule.active ?? true)) return "desativada";
 
   // Use the same logic as the automation hook so panel and playback always agree
   if (isScheduleActiveAt(schedule, now)) return "executando";
@@ -97,9 +122,6 @@ const StatusBadge = ({ status }: { status: ScheduleStatus }) => {
 };
 
 const PROG_TABS = new Set(["active", "schedule", "extras"]);
-const PROGRAMACAO_TAB_KEY = "edu-programacao-active-tab";
-const PROGRAMACAO_TAB_TS_KEY = "edu-programacao-active-tab-ts";
-const PROGRAMACAO_TAB_RESTORE_LIMIT_MS = 5 * 60 * 1000;
 const MAX_GROUP_SELECTION = 50;
 
 const STATUS_ORDER: Record<ScheduleStatus, number> = {
@@ -114,51 +136,70 @@ const getProgramacaoTabFromSearch = (searchParams: URLSearchParams): string | nu
   return tab && PROG_TABS.has(tab) ? tab : null;
 };
 
-const getSavedProgramacaoTab = (): string | null => {
-  if (typeof window === 'undefined') return null;
-  try {
-    const tab = localStorage.getItem(PROGRAMACAO_TAB_KEY);
-    const ts = localStorage.getItem(PROGRAMACAO_TAB_TS_KEY);
-
-    if (!tab || !ts || !PROG_TABS.has(tab)) return null;
-
-    const elapsed = Date.now() - Number(ts);
-    if (elapsed > PROGRAMACAO_TAB_RESTORE_LIMIT_MS) return null;
-
-    return tab;
-  } catch {
-    return null;
-  }
-};
-
-const saveProgramacaoTab = (tab: string) => {
-  try {
-    localStorage.setItem(PROGRAMACAO_TAB_KEY, tab);
-    localStorage.setItem(PROGRAMACAO_TAB_TS_KEY, String(Date.now()));
-  } catch {}
-};
-
 const ProgramacaoPanel = () => {
   const searchParams = useSearchParams();
   const urlTab = getProgramacaoTabFromSearch(searchParams);
-  const activeTab = urlTab ?? getSavedProgramacaoTab() ?? "active";
-
-  useEffect(() => {
-    saveProgramacaoTab(activeTab);
-    if (urlTab) return;
-    const next = new URLSearchParams(window.location.search);
-    next.set("tab", activeTab);
-    window.history.replaceState(null, "", `${window.location.pathname}?${next.toString()}`);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, urlTab]);
+  const activeTab = urlTab ?? "extras";
 
   const handleTabChange = (value: string) => {
     if (!PROG_TABS.has(value)) return;
-    saveProgramacaoTab(value);
     const next = new URLSearchParams(window.location.search);
     next.set("tab", value);
     window.history.replaceState(null, "", `${window.location.pathname}?${next.toString()}`);
   };
+
+  // ── Configurações: features do cliente ────────────────────────────────────
+  const [clientFeatures, setClientFeatures] = useState<Record<string, { enabled: boolean; limit_value: number | null }>>({});
+  const [clientUserId, setClientUserId] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    let cancelled = false;
+
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!user || cancelled) return;
+      setClientUserId(user.id);
+
+      const loadFeatures = () => {
+        if (cancelled) return;
+        supabase.from("client_features").select("feature_key, enabled, limit_value").eq("user_id", user.id)
+          .then(({ data }) => {
+            if (cancelled) return;
+            const map: Record<string, { enabled: boolean; limit_value: number | null }> = {};
+            ALL_CLIENT_FEATURES.forEach(f => { map[f.key] = { enabled: false, limit_value: 0 }; });
+            if (data) {
+              data.forEach((f: any) => { map[f.feature_key] = { enabled: f.enabled, limit_value: f.limit_value ?? 0 }; });
+            }
+            setClientFeatures(map);
+          });
+      };
+
+      loadFeatures();
+
+      // Nome único por instância evita reutilização interna do Supabase (problema no StrictMode)
+      channel = supabase.channel(`client_features:${user.id}:${Math.random()}`)
+        .on("postgres_changes", {
+          event: "*",
+          schema: "public",
+          table: "client_features",
+          filter: `user_id=eq.${user.id}`,
+        }, () => { loadFeatures(); })
+        .subscribe();
+    });
+
+    return () => {
+      cancelled = true;
+      if (channel) { supabase.removeChannel(channel); channel = null; }
+    };
+  }, []);
+
+  const handleFeatureToggle = async (key: string, current: boolean) => {
+    if (!clientUserId) return;
+    setClientFeatures(prev => ({ ...prev, [key]: { ...prev[key], enabled: !current } }));
+    await supabase.from("client_features").update({ enabled: !current }).eq("user_id", clientUserId).eq("feature_key", key);
+  };
+  // ──────────────────────────────────────────────────────────────────────────
 
   const [initialLoading, setInitialLoading] = useState(true);
   const [playlists, setPlaylists] = useState<PlaylistItem[]>([]);
@@ -168,6 +209,9 @@ const ProgramacaoPanel = () => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [groupScheduleOpen, setGroupScheduleOpen] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [scheduledSpots, setScheduledSpots] = useState<ScheduledSpotItem[]>([]);
+  const [clientNames, setClientNames] = useState<Record<string, string>>({});
   const [now, setNow] = useState(new Date());
 
   // Real-time clock: 10s is enough since schedule status changes at minute boundaries.
@@ -178,22 +222,39 @@ const ProgramacaoPanel = () => {
 
   const fetchData = useCallback(async () => {
     const { data: userData } = await supabase.auth.getUser();
-    setCurrentUserId(userData.user?.id ?? null);
+    const uid = userData.user?.id ?? null;
+    setCurrentUserId(uid);
 
-    // Use a single joined query so we get song counts without fetching every row
-    const [playlistsResponse, schedulesResponse] = await Promise.all([
-      supabase
-        .from("playlists")
-        .select("id, name, created_by, cover_url, playlist_songs(count)")
-        .order("name", { ascending: true }),
-      supabase
-        .from("playlist_schedules")
-        .select("id, playlist_id, start_time, end_time, days_of_week, is_active, updated_at, start_date, end_date")
-        .order("updated_at", { ascending: false }),
+    // Verifica se é admin
+    let callerIsAdmin = false;
+    if (uid) {
+      const { data: roleRow } = await supabase
+        .from("user_roles").select("role").eq("user_id", uid).eq("role", "admin").maybeSingle();
+      callerIsAdmin = !!roleRow;
+      setIsAdmin(callerIsAdmin);
+    }
+
+    // Queries paralelas
+    let schedulesQuery = supabase.from("playlist_schedules").select("*");
+    let spotConfigsQuery = supabase.from("spot_configs")
+      .select("spot_id, user_id, schedule_start, schedule_end")
+      .not("schedule_start", "is", null);
+
+    // Cliente só vê as suas próprias programações
+    if (!callerIsAdmin && uid) {
+      schedulesQuery = schedulesQuery.eq("user_id", uid);
+      spotConfigsQuery = spotConfigsQuery.eq("user_id", uid);
+    }
+
+    const [playlistsResponse, schedulesResponse, spotsResponse, spotConfigsResponse] = await Promise.all([
+      supabase.from("playlists").select("id, name, created_by, cover_url, playlist_songs(count)").order("name", { ascending: true }),
+      schedulesQuery,
+      supabase.from("spots").select("id, title, user_id"),
+      spotConfigsQuery,
     ]);
 
-    if (playlistsResponse.error || schedulesResponse.error) {
-      toast.error("Erro ao carregar dados de programação.");
+    if (playlistsResponse.error) {
+      toast.error("Erro ao carregar playlists.");
       setInitialLoading(false);
       return;
     }
@@ -205,7 +266,6 @@ const ProgramacaoPanel = () => {
       cover_url: p.cover_url,
       songCount: (p.playlist_songs as Array<{ count: number }> | null)?.[0]?.count ?? 0,
     }));
-
     setPlaylists(enriched);
 
     const deduped = new Map<string, ScheduleWindow>();
@@ -218,8 +278,42 @@ const ProgramacaoPanel = () => {
         } as ScheduleWindow);
       }
     });
-
     setSchedulesByPlaylist(Object.fromEntries(deduped.entries()));
+
+    // Monta lista de spots agendados
+    const spotMap: Record<string, { title: string; user_id: string }> = {};
+    (spotsResponse.data || []).forEach((s: any) => { spotMap[s.id] = { title: s.title, user_id: s.user_id }; });
+
+    const spots: ScheduledSpotItem[] = (spotConfigsResponse.data || [])
+      .filter((c: any) => spotMap[c.spot_id])
+      .map((c: any) => ({
+        spotId: c.spot_id,
+        spotTitle: spotMap[c.spot_id]?.title ?? c.spot_id,
+        userId: c.user_id,
+        scheduleStart: c.schedule_start,
+        scheduleEnd: c.schedule_end,
+      }));
+    setScheduledSpots(spots);
+
+    // Para admin: busca nomes dos clientes
+    if (callerIsAdmin) {
+      const allUserIds = [
+        ...new Set([
+          ...(schedulesResponse.data || []).map((s: any) => s.user_id).filter(Boolean),
+          ...spots.map((s) => s.userId).filter(Boolean),
+        ]),
+      ];
+      if (allUserIds.length > 0) {
+        const { data: profiles } = await supabase
+          .from("profiles").select("user_id, display_name, username").in("user_id", allUserIds);
+        const names: Record<string, string> = {};
+        (profiles || []).forEach((p: any) => {
+          names[p.user_id] = p.display_name || p.username || p.user_id.slice(0, 8);
+        });
+        setClientNames(names);
+      }
+    }
+
     setInitialLoading(false);
   }, []);
 
@@ -237,10 +331,12 @@ const ProgramacaoPanel = () => {
       .subscribe();
     // Atualiza imediatamente quando qualquer dialog salva um agendamento (mesmo em outra seção)
     window.addEventListener("schedule-saved", debouncedFetch);
+    window.addEventListener("spot-configs-changed", debouncedFetch);
     return () => {
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       supabase.removeChannel(channel);
       window.removeEventListener("schedule-saved", debouncedFetch);
+      window.removeEventListener("spot-configs-changed", debouncedFetch);
     };
   }, [fetchData]);
 
@@ -344,79 +440,118 @@ const ProgramacaoPanel = () => {
       <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
         <div className="bg-background pb-2 -mx-4 px-4 sm:-mx-6 sm:px-6 pt-1">
           <TabsList className="bg-muted w-full grid grid-cols-3">
-            <TabsTrigger value="active" className="text-xs gap-1.5 text-white/60 hover:text-white/90 hover:bg-white/10 transition-all data-[state=active]:text-primary data-[state=active]:bg-background">
-              <CheckCircle2 className="h-3.5 w-3.5" />
-              Ativas ({scheduledPlaylists.length})
+            <TabsTrigger value="extras" className="text-xs gap-1.5 text-white/60 hover:text-white/90 hover:bg-white/10 transition-all data-[state=active]:text-primary data-[state=active]:bg-background">
+              <Settings2 className="h-3.5 w-3.5" />
+              Configurações
             </TabsTrigger>
             <TabsTrigger value="schedule" className="text-xs gap-1.5 text-white/60 hover:text-white/90 hover:bg-white/10 transition-all data-[state=active]:text-primary data-[state=active]:bg-background">
               <ListMusic className="h-3.5 w-3.5" />
-              Programar
+              Programar Playlists
             </TabsTrigger>
-            <TabsTrigger value="extras" className="text-xs gap-1.5 text-white/60 hover:text-white/90 hover:bg-white/10 transition-all data-[state=active]:text-primary data-[state=active]:bg-background">
-              <WandSparkles className="h-3.5 w-3.5" />
-              Extras
+            <TabsTrigger value="active" className="text-xs gap-1.5 text-white/60 hover:text-white/90 hover:bg-white/10 transition-all data-[state=active]:text-primary data-[state=active]:bg-background">
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              Programações Ativas
             </TabsTrigger>
           </TabsList>
         </div>
 
-        {/* ─── TAB: Ativas ─── */}
+        {/* ─── TAB: Programações Ativas ─── */}
         <TabsContent value="active">
           <motion.div className="mt-4 space-y-3" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.22, ease: "easeOut" }}>
-          {scheduledPlaylists.length === 0 ? (
+          {scheduledPlaylists.length === 0 && scheduledSpots.length === 0 ? (
             <div className="text-center py-10 space-y-2">
               <CalendarClock className="h-10 w-10 text-muted-foreground/30 mx-auto" />
               <p className="text-sm text-white/70">Nenhuma programação ativa ainda.</p>
-              <p className="text-xs text-white/50">
-                Use a aba "Programar" para agendar suas playlists.
-              </p>
+              <p className="text-xs text-white/50">Use a aba "Programar" para agendar suas playlists.</p>
             </div>
           ) : (
-            scheduledPlaylists.map((playlist) => {
-              const schedule = schedulesByPlaylist[playlist.id];
-              const status = getScheduleStatus(schedule, now);
+            <>
+              {/* ── Playlists programadas ── */}
+              {scheduledPlaylists.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-[11px] font-semibold text-white/40 uppercase tracking-wider px-1">Playlists</p>
+                  {scheduledPlaylists.map((playlist) => {
+                    const schedule = schedulesByPlaylist[playlist.id];
+                    const status = getScheduleStatus(schedule, now);
+                    const clientName = isAdmin && schedule.user_id ? (clientNames[schedule.user_id] ?? schedule.user_id?.slice(0, 8)) : null;
 
-              return (
-                <div
-                  key={playlist.id}
-                  className={`group relative flex items-center gap-3 rounded-xl p-3 transition-all ${
-                    status === "executando"
-                      ? "bg-green-500/5"
-                      : "bg-secondary/20"
-                  }`}
-                >
-                  <div className="h-12 w-12 rounded-lg bg-secondary/50 flex-shrink-0 overflow-hidden">
-                    {playlist.cover_url ? (
-                      <img src={playlist.cover_url} alt="" className="h-full w-full object-cover" />
-                    ) : (
-                      <div className="h-full w-full flex items-center justify-center">
-                        <ListMusic className="h-5 w-5 text-white/40" />
+                    return (
+                      <div
+                        key={playlist.id}
+                        className={`group relative flex items-center gap-3 rounded-xl p-3 transition-all ${status === "executando" ? "bg-green-500/5" : "bg-secondary/20"}`}
+                      >
+                        <div className="h-12 w-12 rounded-lg bg-secondary/50 flex-shrink-0 overflow-hidden">
+                          {playlist.cover_url ? (
+                            <img src={playlist.cover_url} alt="" className="h-full w-full object-cover" />
+                          ) : (
+                            <div className="h-full w-full flex items-center justify-center">
+                              <ListMusic className="h-5 w-5 text-white/40" />
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0 space-y-0.5">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="text-sm font-medium truncate text-white">{playlist.name}</p>
+                            {clientName && (
+                              <Badge className="bg-blue-500/15 text-blue-300 border-blue-500/30 text-[10px] px-1.5 py-0 gap-1 pointer-events-none flex-shrink-0">
+                                <User className="h-2.5 w-2.5" />{clientName}
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="text-xs text-white/60">{formatDateRange(schedule)}</p>
+                            <StatusBadge status={status} />
+                          </div>
+                          <p className="text-[11px] text-primary/90">Início/Fim: {formatStartEndLabel(schedule)}</p>
+                        </div>
+                        <Button size="sm" className="h-8 text-xs px-3 flex-shrink-0 bg-primary text-primary-foreground hover:bg-primary/90 border-none transition-all" onClick={() => setSchedulePlaylist(playlist)}>
+                          Editar
+                        </Button>
                       </div>
-                    )}
-                  </div>
-
-                  <div className="flex-1 min-w-0 space-y-0.5">
-                    <p className="text-sm font-medium truncate text-white">{playlist.name}</p>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <p className="text-xs text-white/60">
-                        {formatDateRange(schedule)}
-                      </p>
-                      <StatusBadge status={status} />
-                    </div>
-                    <p className="text-[11px] text-primary/90">
-                      Início/Fim: {formatStartEndLabel(schedule)}
-                    </p>
-                  </div>
-
-                  <Button
-                    size="sm"
-                    className="h-8 text-xs px-3 flex-shrink-0 bg-primary text-primary-foreground hover:bg-primary/90 border-none transition-all"
-                    onClick={() => setSchedulePlaylist(playlist)}
-                  >
-                    Editar
-                  </Button>
+                    );
+                  })}
                 </div>
-              );
-            })
+              )}
+
+              {/* ── Spots programados ── */}
+              {scheduledSpots.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-[11px] font-semibold text-white/40 uppercase tracking-wider px-1">Spots</p>
+                  {scheduledSpots.map((spot) => {
+                    const status = getSpotStatus(spot, now);
+                    const clientName = isAdmin && spot.userId ? (clientNames[spot.userId] ?? spot.userId?.slice(0, 8)) : null;
+                    return (
+                      <div
+                        key={spot.spotId}
+                        className={`flex items-center gap-3 rounded-xl p-3 transition-all ${status === "executando" ? "bg-green-500/5" : "bg-secondary/20"}`}
+                      >
+                        <div className="h-12 w-12 rounded-lg bg-secondary/50 flex-shrink-0 flex items-center justify-center">
+                          <Volume2 className="h-5 w-5 text-white/40" />
+                        </div>
+                        <div className="flex-1 min-w-0 space-y-0.5">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="text-sm font-medium truncate text-white">{spot.spotTitle}</p>
+                            {clientName && (
+                              <Badge className="bg-blue-500/15 text-blue-300 border-blue-500/30 text-[10px] px-1.5 py-0 gap-1 pointer-events-none flex-shrink-0">
+                                <User className="h-2.5 w-2.5" />{clientName}
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {spot.scheduleStart && (
+                              <p className="text-xs text-white/60">
+                                {spot.scheduleStart} {spot.scheduleEnd ? `→ ${spot.scheduleEnd}` : ""}
+                              </p>
+                            )}
+                            <StatusBadge status={status} />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
           )}
           </motion.div>
         </TabsContent>
@@ -546,19 +681,58 @@ const ProgramacaoPanel = () => {
           </motion.div>
         </TabsContent>
 
-        {/* ─── TAB: Extras ─── */}
+        {/* ─── TAB: Configurações ─── */}
         <TabsContent value="extras">
-          <motion.div className="mt-4 space-y-4" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.22, ease: "easeOut" }}>
-          <div className="rounded-xl bg-secondary/10 p-4 space-y-2">
-            <div className="flex items-center gap-2">
-              <WandSparkles className="h-5 w-5 text-primary" />
-              <h3 className="text-sm font-semibold text-white">Spots e Áudios IA</h3>
-            </div>
-            <p className="text-xs text-white/70 leading-relaxed">
-              Organize seus áudios de vinheta e IA em playlists dedicadas e programe-os pela aba
-              "Programar". Assim eles tocam automaticamente nos horários que você definir.
-            </p>
-          </div>
+          <motion.div className="mt-4 space-y-2" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.22, ease: "easeOut" }}>
+            {ALL_CLIENT_FEATURES.map(feat => {
+              const f = clientFeatures[feat.key];
+              const isEspelho      = feat.key === "player_espelho";
+              const isIndependente = feat.key === "player_independente";
+              const isPlayer       = isEspelho || isIndependente;
+              const mode           = isEspelho ? "mirror" : "independent";
+              const link           = clientUserId ? `${window.location.origin}/player/embed?client=${clientUserId}&mode=${mode}` : "";
+
+              return (
+                <div key={feat.key} className="rounded-xl bg-secondary/10 border border-white/10 px-4 py-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-white truncate">{feat.label}</p>
+                    </div>
+                    <Switch
+                      checked={f?.enabled ?? false}
+                      disabled
+                      className="pointer-events-none"
+                    />
+                  </div>
+                  {isPlayer && link && (
+                    <div className="pt-1">
+                      <button
+                        type="button"
+                        disabled={!f?.enabled}
+                        className={`w-1/2 flex items-center justify-center gap-2 h-6 rounded-md text-xs font-semibold transition-all border ${
+                          !f?.enabled
+                            ? "border-primary/20 bg-primary/10 text-primary/30 cursor-not-allowed"
+                            : copiedKey === feat.key
+                              ? "border-green-500/50 bg-green-500/15 text-green-400"
+                              : "border-primary/40 bg-primary/15 text-primary hover:bg-primary/25"
+                        }`}
+                        onClick={() => {
+                          if (!f?.enabled) return;
+                          navigator.clipboard.writeText(link);
+                          setCopiedKey(feat.key);
+                          setTimeout(() => setCopiedKey(null), 2000);
+                        }}
+                      >
+                        {copiedKey === feat.key
+                          ? <><Check className="h-3 w-3" /> Link copiado!</>
+                          : <><Link2 className="h-3 w-3" /> Gerar link do player flutuante</>
+                        }
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </motion.div>
         </TabsContent>
       </Tabs>

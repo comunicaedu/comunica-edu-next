@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef, type KeyboardEvent } from "react";
-import { useSearchParams } from "next/navigation";
 import { User, Lock, Eye, EyeOff, CreditCard, Mail, Phone, MapPin, Home, Hash, CalendarDays, Loader2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -67,7 +66,6 @@ type StoredPlan = {
 
 const CadastroForm = ({ onBack, onNavigatePlanos }: CadastroFormProps) => {
   const lastGuardToastAt = useRef(0);
-  const searchParams = useSearchParams();
 
   const [userLogo, setUserLogo] = useState<string | null>(() => typeof window !== 'undefined' ? localStorage.getItem("user-logo") : null);
 
@@ -82,10 +80,6 @@ const CadastroForm = ({ onBack, onNavigatePlanos }: CadastroFormProps) => {
   };
   const hasPlanSelected = useCallback(() => {
     try {
-      const urlPlanId = searchParams.get("plan");
-      const urlServiceId = searchParams.get("service");
-      if (urlPlanId && urlServiceId) return true;
-
       const planRaw = localStorage.getItem(PLAN_STORAGE_KEY);
       const unlockRaw = sessionStorage.getItem(PLAN_UNLOCK_KEY);
       if (!planRaw || !unlockRaw) return false;
@@ -103,7 +97,7 @@ const CadastroForm = ({ onBack, onNavigatePlanos }: CadastroFormProps) => {
     } catch {
       return false;
     }
-  }, [searchParams]);
+  }, []);
 
   const redirectToPlans = useCallback(() => {
     const now = Date.now();
@@ -492,6 +486,7 @@ const CadastroForm = ({ onBack, onNavigatePlanos }: CadastroFormProps) => {
             disabled={fieldLocked || !isFormReady()}
             onValidate={handleTryPay}
             dueDay={dueDay}
+            logoUrl={userLogo}
           />
         </div>
 

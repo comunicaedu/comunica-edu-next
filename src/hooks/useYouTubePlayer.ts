@@ -20,6 +20,7 @@ interface YouTubeState {
   currentTime: number;
   endedTick: number;
   errorTick: number;
+  errorCode: number | null;
 }
 
 let ytApiLoaded = false;
@@ -59,6 +60,7 @@ export const useYouTubePlayer = () => {
   const normalizationGainRef = useRef(1);
   const [state, setState] = useState<YouTubeState>({
     errorTick: 0,
+    errorCode: null,
     isLoading: false,
     isPlaying: false,
     videoId: null,
@@ -71,7 +73,9 @@ export const useYouTubePlayer = () => {
   useEffect(() => {
     const div = document.createElement("div");
     div.id = "yt-player-hidden";
-    div.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;";
+    // Posicionado dentro do viewport com opacity quase zero — Chrome não throttle iframes
+    // que estão fora do viewport (-9999px), o que pausava o YouTube em tabs minimizadas.
+    div.style.cssText = "position:fixed;bottom:0;right:0;width:1px;height:1px;opacity:0.001;pointer-events:none;z-index:-1;";
     document.body.appendChild(div);
     containerRef.current = div;
 
@@ -177,8 +181,7 @@ export const useYouTubePlayer = () => {
           },
           onError: (event: any) => {
             console.warn("YouTube player error code:", event.data);
-            // Dispara errorTick para que o player pule automaticamente para a próxima música
-            setState((s) => ({ ...s, isLoading: false, isPlaying: false, errorTick: Date.now() }));
+            setState((s) => ({ ...s, isLoading: false, isPlaying: false, errorTick: Date.now(), errorCode: event.data ?? null }));
           },
         },
       });
@@ -209,14 +212,44 @@ export const useYouTubePlayer = () => {
     }
   }, [playByVideoId]);
 
+  /**
+   * Troca de vídeo SEM destruir o player — usa loadVideoById no IFrame existente.
+   * Funciona em background porque não recria o DOM, apenas envia postMessage ao IFrame.
+   * Usado para transições entre músicas YouTube (incluindo com aba minimizada).
+   */
+  const loadNext = useCallback(async (videoId: string, initialVolume?: number): Promise<void> => {
+    const player = playerRef.current;
+    if (!player || typeof player.loadVideoById !== "function") {
+      // Player não existe ainda → cria normalmente
+      return playByVideoId(videoId, initialVolume);
+    }
+
+    if (typeof initialVolume === "number") {
+      desiredVolumeRef.current = clamp01(initialVolume);
+    }
+
+    setState((s) => ({ ...s, isLoading: true, videoId, endedTick: 0 }));
+
+    try {
+      // loadVideoById mantém o mesmo IFrame — funciona mesmo em background
+      player.loadVideoById({ videoId, suggestedQuality: "small" });
+      applyVolumeToPlayer(desiredVolumeRef.current);
+      startProgressTracking();
+      setState((s) => ({ ...s, isLoading: false, isPlaying: true }));
+    } catch {
+      // Fallback: recria o player
+      return playByVideoId(videoId, initialVolume);
+    }
+  }, [playByVideoId, applyVolumeToPlayer, startProgressTracking]);
+
   const play = useCallback(() => {
-    playerRef.current?.playVideo();
+    playerRef.current?.playVideo?.();
     setState((s) => ({ ...s, isPlaying: true }));
     startProgressTracking();
   }, [startProgressTracking]);
 
   const pause = useCallback(() => {
-    playerRef.current?.pauseVideo();
+    playerRef.current?.pauseVideo?.();
     setState((s) => ({ ...s, isPlaying: false }));
   }, []);
 
@@ -240,7 +273,7 @@ export const useYouTubePlayer = () => {
 
   const stop = useCallback(() => {
     if (intervalRef.current) clearInterval(intervalRef.current);
-    playerRef.current?.stopVideo();
+    playerRef.current?.stopVideo?.();
     setState({
       isLoading: false,
       isPlaying: false,
@@ -250,12 +283,14 @@ export const useYouTubePlayer = () => {
       currentTime: 0,
       endedTick: 0,
       errorTick: 0,
+      errorCode: null,
     });
   }, []);
 
   return {
     ...state,
     playByVideoId,
+    loadNext,
     searchAndPlay,
     play,
     pause,

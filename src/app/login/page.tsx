@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { User, Lock, Eye, EyeOff } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -11,9 +11,8 @@ import CadastroForm from "@/components/CadastroForm";
 import PlansModal from "@/components/PlansModal";
 import WhatsAppButton from "@/components/WhatsAppButton";
 import { useBackground } from "@/contexts/BackgroundContext";
-// TODO: reativar imports antes do lançamento
-// import { supabase } from "@/lib/supabase/client";
-// import { toast } from "sonner";
+import { supabase } from "@/lib/supabase/client";
+import { toast } from "sonner";
 
 function hexToRgba(hex: string, alpha: number): string {
   const h = hex.replace("#", "");
@@ -34,17 +33,24 @@ const fadeVariants = {
 export default function LoginPage() {
   const [activeView, setActiveView] = useState<ActiveView>("login");
   const [showPassword, setShowPassword] = useState(false);
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [senha, setSenha] = useState("");
-  const [loading] = useState(false);
-  const [errors, setErrors] = useState({ email: false, senha: false });
+  const [loading, setLoading] = useState(false);
+  const [errors, setErrors] = useState({ username: false, senha: false });
   const [panelOpacity] = useState(85);
   const [panelBlur] = useState(2);
+  const [fieldsLocked, setFieldsLocked] = useState(true);
 
   const router = useRouter();
+
+  // Prevent browser autofill: fields start as readOnly, unlock after mount
+  useEffect(() => {
+    const t = setTimeout(() => setFieldsLocked(false), 50);
+    return () => clearTimeout(t);
+  }, []);
   const { settings } = useBackground();
 
-  const isFormValid = email.trim() !== "" && senha.trim() !== "";
+  const isFormValid = username.trim() !== "" && senha.trim() !== "";
 
   const transition = { duration: TRANSITION_MS, ease: [0.4, 0, 0.2, 1] as [number, number, number, number] };
 
@@ -69,9 +75,43 @@ export default function LoginPage() {
 
   const handleLogin = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
-    // TODO: reativar autenticação real antes do lançamento
-    router.replace("/player");
-  }, [email, senha, router]);
+    const uname = username.trim().toLowerCase();
+    if (!uname || !senha) return;
+
+    setLoading(true);
+    try {
+      // Tenta username@comunicaedu.app primeiro
+      let { data, error: authError } = await supabase.auth.signInWithPassword({
+        email: `${uname}@comunicaedu.app`,
+        password: senha,
+      });
+
+      // Fallback: tenta o input direto como email (contas antigas)
+      if (authError) {
+        const fallback = await supabase.auth.signInWithPassword({
+          email: uname,
+          password: senha,
+        });
+        if (!fallback.error) {
+          data = fallback.data;
+          authError = null;
+        }
+      }
+
+      if (authError || !data?.user) {
+        setErrors({ username: true, senha: true });
+        toast.error("Usuário ou senha incorretos.");
+        setLoading(false);
+        return;
+      }
+
+      localStorage.setItem("edu-username", uname);
+      router.replace("/player");
+    } catch {
+      toast.error("Erro ao entrar. Tente novamente.");
+      setLoading(false);
+    }
+  }, [username, senha, router]);
 
   const handleOverlayClick = () => {
     if (activeView !== "login") setActiveView("login");
@@ -103,7 +143,7 @@ export default function LoginPage() {
         className="relative z-20 w-full max-w-[95vw] sm:max-w-md"
         style={{ '--panel-bg': `rgba(92, 92, 92, ${panelOpacity / 100})`, '--panel-blur': `blur(${panelBlur}px)` } as React.CSSProperties}
       >
-        <AnimatePresence initial={false}>
+        <AnimatePresence initial={false} mode="wait">
 
           {activeView === "login" && (
             <motion.div
@@ -126,16 +166,18 @@ export default function LoginPage() {
 
               <form onSubmit={handleLogin} className="space-y-5">
                 <div className="space-y-1.5">
-                  <label className="text-sm font-medium text-white">E-mail</label>
+                  <label className="text-sm font-medium text-white">Usuário</label>
                   <div className="relative">
                     <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
-                      type="email"
-                      value={email}
-                      onChange={(e) => { setEmail(e.target.value); if (errors.email) setErrors(prev => ({ ...prev, email: false })); }}
-                      placeholder="Digite seu e-mail"
-                      autoComplete="email"
-                      className={`pl-10 bg-muted border-border text-white ${errors.email ? "border-destructive ring-1 ring-destructive" : ""}`}
+                      type="text"
+                      value={username}
+                      onChange={(e) => { setUsername(e.target.value.toLowerCase()); if (errors.username) setErrors(prev => ({ ...prev, username: false })); }}
+                      placeholder="Digite seu usuário"
+                      autoComplete="new-password"
+                      readOnly={fieldsLocked}
+                      onFocus={() => setFieldsLocked(false)}
+                      className={`pl-10 bg-muted border-border text-white ${errors.username ? "border-destructive ring-1 ring-destructive" : ""}`}
                     />
                   </div>
                 </div>
@@ -149,7 +191,9 @@ export default function LoginPage() {
                       value={senha}
                       onChange={(e) => { setSenha(e.target.value); if (errors.senha) setErrors(prev => ({ ...prev, senha: false })); }}
                       placeholder="Digite sua senha"
-                      autoComplete="current-password"
+                      autoComplete="new-password"
+                      readOnly={fieldsLocked}
+                      onFocus={() => setFieldsLocked(false)}
                       className={`pl-10 pr-10 bg-muted border-border text-white ${errors.senha ? "border-destructive ring-1 ring-destructive" : ""}`}
                     />
                     <button

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { UserPlus, Loader2, Eye, EyeOff, ImagePlus, X } from "lucide-react";
+import { UserPlus, Loader2, Eye, EyeOff, ImagePlus, X, Link2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -36,10 +36,9 @@ const formatCEP = (v: string) => {
   return `${d.slice(0, 5)}-${d.slice(5)}`;
 };
 
-const ManualClientForm = () => {
+const ManualClientForm = ({ onSuccess }: { onSuccess?: (userId: string) => void }) => {
   const [nome, setNome] = useState("");
   const [cnpj, setCnpj] = useState("");
-  const [email, setEmail] = useState("");
   const [telefone, setTelefone] = useState("");
   const [usuario, setUsuario] = useState("");
   const [senha, setSenha] = useState("");
@@ -69,9 +68,11 @@ const ManualClientForm = () => {
 
   const [featureToggles, setFeatureToggles] = useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {};
-    ALL_CLIENT_FEATURES.forEach((f) => { initial[f.key] = true; });
+    ALL_CLIENT_FEATURES.forEach((f) => { initial[f.key] = false; });
     return initial;
   });
+
+  const [featureLimits] = useState<Record<string, number>>({});
 
   const activePlans = plans.filter((p) => p.is_active);
 
@@ -162,18 +163,23 @@ const ManualClientForm = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!nome.trim() || !cnpj.trim() || !email.trim() || !senha.trim()) {
-      toast({ title: "Preencha todos os campos obrigatórios", variant: "destructive" });
+    if (!usuario.trim() || !senha.trim()) {
+      toast({ title: "Usuário e senha são obrigatórios", variant: "destructive" });
       return;
     }
 
-    if (senha.length < 6) {
-      toast({ title: "A senha deve ter pelo menos 6 caracteres", variant: "destructive" });
+    if (usuario.length > 6) {
+      toast({ title: "Usuário deve ter no máximo 6 caracteres", variant: "destructive" });
+      return;
+    }
+
+    if (senha.length > 5) {
+      toast({ title: "Senha deve ter no máximo 5 caracteres", variant: "destructive" });
       return;
     }
 
     const rawCnpj = cnpj.replace(/\D/g, "");
-    if (!isValidCNPJ(rawCnpj)) {
+    if (rawCnpj && !isValidCNPJ(rawCnpj)) {
       toast({ title: "CNPJ inválido", variant: "destructive" });
       return;
     }
@@ -181,85 +187,115 @@ const ManualClientForm = () => {
     setSaving(true);
 
     try {
-      // 1. Create Asaas customer
-      const { data: asaasResult, error: asaasError } = await supabase.functions.invoke("create-asaas-customer", {
-        body: {
-          nome: nome.trim(),
-          email: email.trim(),
-          telefone: telefone.replace(/\D/g, "") || undefined,
-          cpfCnpj: rawCnpj,
-        },
-      });
-
-      if (asaasError) {
-        toast({ title: "Erro ao criar cliente no Asaas", description: asaasError.message, variant: "destructive" });
-        setSaving(false);
-        return;
-      }
-
-      const asaasCustomerId = asaasResult?.customerId;
-
-      // 2. Create auth user
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: email.trim(),
-        password: senha,
-      });
-
-      if (authError) {
-        toast({ title: "Erro ao criar usuário", description: authError.message, variant: "destructive" });
-        setSaving(false);
-        return;
-      }
-
-      if (authData.user) {
-        // 3. Update profile
-        const { error: profileError } = await supabase
-          .from("profiles")
-          .update({
-            nome: nome.trim(),
-            email: email.trim(),
+      // 1. Create auth user via admin API (MUST be first — we need the userId)
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/auth/create-client", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: usuario.trim().toLowerCase(),
+          password: senha,
+          accessToken: session?.access_token,
+          profile: {
+            nome: nome.trim() || null,
             telefone: telefone || null,
-            asaas_customer_id: asaasCustomerId || null,
-            nota_fiscal: notaFiscal,
+            cidade: cidade || null,
             cep: cep.replace(/\D/g, "") || null,
             rua: rua || null,
             numero: numero || null,
             bairro: bairro || null,
-            cidade: cidade || null,
             complemento: complemento || null,
-          })
-          .eq("user_id", authData.user.id);
+            notaFiscal,
+          },
+        }),
+      });
+      const resText = await res.text();
+      let resData: any = {};
+      try { resData = JSON.parse(resText); } catch { resData = {}; }
+      console.log("create-client →", res.status, resText);
 
-        if (profileError) {
-          console.error("Profile update error:", profileError);
+      if (!res.ok || !resData.userId) {
+        toast({ title: resData.error || `Erro ${res.status}: ${resText}` , variant: "destructive" });
+        setSaving(false);
+        return;
+      }
+
+      const userId = resData.userId;
+
+      // 2. Create Asaas customer — só se nome e CNPJ foram preenchidos
+      if (nome.trim() && rawCnpj) {
+        try {
+          await supabase.functions.invoke("create-asaas-customer", {
+            body: {
+              nome: nome.trim(),
+              telefone: telefone.replace(/\D/g, "") || undefined,
+              cpfCnpj: rawCnpj,
+            },
+          });
+        } catch {
+          // Asaas indisponível — continua mesmo assim
         }
+      }
 
-        // 4. Save feature toggles + AI vinhetas limit
-        const featureRows = ALL_CLIENT_FEATURES.map((f) => ({
-          user_id: authData.user!.id,
-          feature_key: f.key,
-          enabled: featureToggles[f.key] ?? true,
-        }));
+      // 3. Save feature toggles + AI vinhetas limit
+      const featureRows = ALL_CLIENT_FEATURES.map((f) => ({
+        user_id: userId,
+        feature_key: f.key,
+        enabled: featureToggles[f.key] ?? true,
+        limit_value: null,
+      }));
 
-        const { error: featError } = await supabase.functions.invoke("admin-clients?action=batch-features", {
-          method: "POST",
-          body: { user_id: authData.user.id, features: featureRows, ai_vinhetas_limit: aiVinhetasLimit },
-        });
+      const { data: { session: featSession } } = await supabase.auth.getSession();
+      await fetch("/api/admin/save-client-features", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(featSession?.access_token
+            ? { Authorization: `Bearer ${featSession.access_token}` }
+            : {}),
+        },
+        body: JSON.stringify({
+          userId,
+          features: featureRows,
+          aiVinhetasLimit,
+        }),
+      });
 
-        if (featError) {
-          console.error("Feature save error:", featError);
+      // 4. Upload logo como avatar se fornecido
+      if (logo) {
+        try {
+          const logoRes = await fetch(logo);
+          const logoBlob = await logoRes.blob();
+          const logoFile = new File([logoBlob], "avatar.png", { type: logoBlob.type || "image/png" });
+
+          const { data: { session: uploadSession } } = await supabase.auth.getSession();
+
+          const form = new FormData();
+          form.append("clientId", userId);
+          form.append("file", logoFile);
+
+          await fetch("/api/admin/upload-client-avatar", {
+            method: "POST",
+            headers: uploadSession?.access_token
+              ? { Authorization: `Bearer ${uploadSession.access_token}` }
+              : {},
+            body: form,
+          });
+        } catch {
+          // Avatar opcional — não bloqueia o cadastro
         }
       }
 
       toast({ title: "Cliente cadastrado com sucesso!" });
+      onSuccess?.(userId);
 
       // Reset form
-      setNome(""); setCnpj(""); setEmail(""); setTelefone(""); setSenha(""); setUsuario("");
+      setNome(""); setCnpj(""); setTelefone(""); setSenha(""); setUsuario("");
       setSelectedService(""); setSelectedPlan(""); setAiVinhetasLimit(30); setNotaFiscal(false);
       setCep(""); setRua(""); setNumero(""); setBairro(""); setCidade(""); setComplemento("");
       setLogo(null);
       const reset: Record<string, boolean> = {};
-      ALL_CLIENT_FEATURES.forEach((f) => { reset[f.key] = true; });
+      ALL_CLIENT_FEATURES.forEach((f) => { reset[f.key] = false; });
       setFeatureToggles(reset);
     } catch (err: any) {
       toast({ title: "Erro ao cadastrar", description: err?.message || "Tente novamente", variant: "destructive" });
@@ -292,13 +328,8 @@ const ManualClientForm = () => {
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="email">E-mail *</Label>
-            <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email@empresa.com" />
-          </div>
-
-          <div className="space-y-1.5">
             <Label htmlFor="usuario">Usuário *</Label>
-            <Input id="usuario" value={usuario} onChange={(e) => setUsuario(e.target.value)} placeholder="Nome de usuário para login" />
+            <Input id="usuario" value={usuario} onChange={(e) => setUsuario(e.target.value)} placeholder="Digite seu usuário" maxLength={6} autoComplete="off" />
           </div>
 
           <div className="space-y-1.5">
@@ -309,7 +340,9 @@ const ManualClientForm = () => {
                 type={showPassword ? "text" : "password"}
                 value={senha}
                 onChange={(e) => setSenha(e.target.value)}
-                placeholder="Mínimo 6 caracteres"
+                placeholder="Digite sua senha"
+                maxLength={5}
+                autoComplete="new-password"
               />
               <button
                 type="button"
@@ -385,6 +418,7 @@ const ManualClientForm = () => {
                 <img src={logo} alt="Logo" className="h-16 w-16 object-contain rounded-lg border border-border bg-secondary/20" />
                 <button
                   type="button"
+                  title="Remover logo"
                   onClick={() => setLogo(null)}
                   className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full p-0.5"
                 >
@@ -397,7 +431,7 @@ const ManualClientForm = () => {
               </div>
             )}
             <div>
-              <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleLogoFile} />
+              <input ref={fileInputRef} type="file" accept="image/*" title="Selecionar logo" className="hidden" onChange={handleLogoFile} />
               <Button type="button" variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
                 {logo ? "Trocar logo" : "Enviar logo"}
               </Button>
@@ -450,28 +484,26 @@ const ManualClientForm = () => {
           </p>
           <div className="grid gap-2">
             {ALL_CLIENT_FEATURES.map((feat) => (
-              <div key={feat.key} className="flex items-center justify-between p-2.5 rounded-lg bg-secondary/20">
-                <span className="text-sm text-foreground">{feat.label}</span>
-                <Switch
-                  checked={featureToggles[feat.key] ?? true}
-                  onCheckedChange={() => toggleFeature(feat.key)}
-                />
+              <div key={feat.key} className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between px-2.5 py-2 rounded-lg bg-secondary/20">
+                  <span className="text-sm text-foreground">{feat.label}</span>
+                  <Switch
+                    checked={featureToggles[feat.key] ?? false}
+                    onCheckedChange={() => toggleFeature(feat.key)}
+                  />
+                </div>
+                {(feat.key === "player_espelho" || feat.key === "player_independente") && (
+                  <div className="ml-[72px] flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary/10 border border-border/40">
+                    <Link2 className="h-3 w-3 text-muted-foreground shrink-0" />
+                    <span className="text-xs text-muted-foreground">
+                      Gerar link do player flutuante
+                    </span>
+                  </div>
+                )}
               </div>
             ))}
           </div>
 
-          <div className="pt-2">
-            <Label htmlFor="ai-vinhetas-limit" className="text-sm">Quantidade de Vinhetas da IA Liberadas</Label>
-            <Input
-              id="ai-vinhetas-limit"
-              type="number"
-              min={0}
-              max={9999}
-              value={aiVinhetasLimit}
-              onChange={(e) => setAiVinhetasLimit(Math.max(0, parseInt(e.target.value) || 0))}
-              className="mt-1.5 w-32"
-            />
-          </div>
         </div>
 
         <Button type="submit" disabled={saving} className="w-full font-semibold">

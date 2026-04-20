@@ -16,6 +16,7 @@ import {
 import {
   Popover, PopoverContent, PopoverTrigger,
 } from "@/components/ui/popover";
+import { authedFetch } from "@/lib/authedFetch";
 
 
 interface GenreWithCount {
@@ -108,8 +109,8 @@ const GenreManagement = () => {
     setLoading(true);
     try {
       const [genresRes, songsRes] = await Promise.all([
-        fetch("/api/genres").then((r) => r.json()),
-        fetch("/api/songs").then((r) => r.json()),
+        authedFetch("/api/genres").then((r) => r.json()),
+        authedFetch("/api/songs").then((r) => r.json()),
       ]);
 
       const standards: { id: string; name: string; display_name: string }[] = genresRes.genres ?? [];
@@ -167,8 +168,8 @@ const GenreManagement = () => {
   const fetchAllPlaylists = useCallback(async () => {
     try {
       const [plRes, psRes] = await Promise.all([
-        fetch("/api/playlists").then((r) => r.json()),
-        fetch("/api/playlist-songs").then((r) => r.json()),
+        authedFetch("/api/playlists").then((r) => r.json()),
+        authedFetch("/api/playlist-songs").then((r) => r.json()),
       ]);
       const playlists: { id: string; name: string }[] = plRes.playlists ?? [];
       const joins: { playlist_id: string }[] = psRes.joins ?? [];
@@ -188,7 +189,7 @@ const GenreManagement = () => {
     setEditingSongId(null);
     fetchAllPlaylists();
     try {
-      const res = await fetch(`/api/songs${genreName !== "Sem Gênero" ? `?genre=${encodeURIComponent(genreName)}` : ""}`);
+      const res = await authedFetch(`/api/songs${genreName !== "Sem Gênero" ? `?genre=${encodeURIComponent(genreName)}` : ""}`);
       const data = await res.json();
       let songs: SongInGenre[] = data.songs ?? [];
       if (genreName === "Sem Gênero") songs = songs.filter((s) => !s.genre);
@@ -318,7 +319,7 @@ const GenreManagement = () => {
   const handleRenameSong = async (song: SongInGenre) => {
     if (!editSongName.trim() || editSongName.trim() === song.title) { setEditingSongId(null); return; }
     const newTitle = editSongName.trim();
-    const res = await fetch("/api/songs", {
+    const res = await authedFetch("/api/songs", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: song.id, title: newTitle }),
@@ -334,7 +335,7 @@ const GenreManagement = () => {
   // ─── MOVE TO PLAYLIST ───
   const handleMoveToPlaylist = async (song: SongInGenre, playlistId: string, playlistName: string) => {
     try {
-      await fetch("/api/playlist-songs", {
+      await authedFetch("/api/playlist-songs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ playlist_id: playlistId, song_ids: [song.id] }),
@@ -348,7 +349,7 @@ const GenreManagement = () => {
 
   const handleMoveSong = async (song: SongInGenre, targetGenre: string) => {
     const newGenre = targetGenre === "Sem Gênero" ? null : targetGenre;
-    const res = await fetch("/api/songs", {
+    const res = await authedFetch("/api/songs", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: song.id, genre: newGenre }),
@@ -373,13 +374,13 @@ const GenreManagement = () => {
     setDeletingSongId(song.id);
     try {
       // Remove from playlist associations
-      await fetch("/api/playlist-songs", {
+      await authedFetch("/api/playlist-songs", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ song_id: song.id }),
       });
       // Delete song file + record
-      await fetch("/api/songs", {
+      await authedFetch("/api/songs", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: song.id }),
@@ -404,7 +405,7 @@ const GenreManagement = () => {
     setDeletingGenreName(genre.name);
     try {
       // 1. Fetch all songs of this genre
-      const songsRes = await fetch("/api/songs").then((r) => r.json());
+      const songsRes = await authedFetch("/api/songs").then((r) => r.json());
       const allSongs: { id: string; genre: string | null }[] = songsRes.songs ?? [];
       const genreSongsToDelete = genre.name === "Sem Gênero"
         ? allSongs.filter((s) => !s.genre)
@@ -412,19 +413,19 @@ const GenreManagement = () => {
 
       // 2. Delete each song (removes file + playlist associations via API)
       for (const s of genreSongsToDelete) {
-        await fetch("/api/playlist-songs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ song_id: s.id }) });
-        await fetch("/api/songs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: s.id }) });
+        await authedFetch("/api/playlist-songs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ song_id: s.id }) });
+        await authedFetch("/api/songs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: s.id }) });
       }
 
       // 3. Remove genre from genres list
       if (genre.name !== "Sem Gênero") {
-        const genresRes = await fetch("/api/genres").then((r) => r.json());
+        const genresRes = await authedFetch("/api/genres").then((r) => r.json());
         const genreRecord = (genresRes.genres ?? []).find(
           (g: { name: string; display_name: string; id: string }) =>
             g.display_name.toLowerCase() === genre.name.toLowerCase()
         );
         if (genreRecord) {
-          await fetch("/api/genres", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: genreRecord.id }) });
+          await authedFetch("/api/genres", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: genreRecord.id }) });
         }
       }
 
@@ -444,12 +445,12 @@ const GenreManagement = () => {
     if (!editName.trim() || editName.trim() === oldName) { setEditingGenre(null); return; }
     const newName = editName.trim();
     // Update all songs with that genre
-    const songsRes = await fetch("/api/songs").then((r) => r.json());
+    const songsRes = await authedFetch("/api/songs").then((r) => r.json());
     const toUpdate = (songsRes.songs ?? []).filter((s: { genre: string | null }) =>
       oldName === "Sem Gênero" ? !s.genre : (s.genre ?? "").toLowerCase() === oldName.toLowerCase()
     );
     await Promise.all(toUpdate.map((s: { id: string }) =>
-      fetch("/api/songs", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: s.id, genre: newName }) })
+      authedFetch("/api/songs", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: s.id, genre: newName }) })
     ));
     toast.success(`Gênero renomeado para "${newName}".`);
     fetchGenres();
@@ -526,7 +527,7 @@ const GenreManagement = () => {
                   onKeyDown={async (e) => {
                     if (e.key === "Enter" && editName.trim()) {
                       const name = editName.trim();
-                      const res = await fetch("/api/genres", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.toLowerCase().replace(/\s+/g, "_"), display_name: name }) });
+                      const res = await authedFetch("/api/genres", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.toLowerCase().replace(/\s+/g, "_"), display_name: name }) });
                       if (!res.ok) { toast.error("Erro ao adicionar gênero."); }
                       else { toast.success(`Gênero "${name}" adicionado!`); fetchGenres(); }
                       setEditingGenre(null); setEditName("");
@@ -536,7 +537,7 @@ const GenreManagement = () => {
                 <button type="button" onClick={async () => {
                   if (editName.trim()) {
                     const name = editName.trim();
-                    const res = await fetch("/api/genres", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.toLowerCase().replace(/\s+/g, "_"), display_name: name }) });
+                    const res = await authedFetch("/api/genres", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.toLowerCase().replace(/\s+/g, "_"), display_name: name }) });
                     if (!res.ok) { toast.error("Erro ao adicionar gênero."); }
                     else { toast.success(`Gênero "${name}" adicionado!`); fetchGenres(); }
                   }

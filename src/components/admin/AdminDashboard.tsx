@@ -19,12 +19,17 @@ const AdminDashboard = () => {
         .from("profiles")
         .select("*", { count: "exact", head: true });
 
+      const { count: adminCount } = await supabase
+        .from("user_roles")
+        .select("*", { count: "exact", head: true })
+        .eq("role", "admin");
+
       const { count: activeCount } = await supabase
         .from("profiles")
         .select("*", { count: "exact", head: true })
         .eq("status", "ativo");
 
-      setTotalClients(profileCount ?? 0);
+      setTotalClients((profileCount ?? 0) - (adminCount ?? 0));
       setTotalAdmins(1);
       setOnlineUsers(activeCount ?? 0);
       setLoading(false);
@@ -66,20 +71,23 @@ const AdminDashboard = () => {
   ];
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-      {metrics.map((m) => (
-        <Card key={m.label} className="bg-card border-0">
-          <CardContent className="p-4 flex items-center gap-4">
-            <div className={`w-11 h-11 rounded-xl ${m.bg} flex items-center justify-center ${m.color}`}>
-              {m.icon}
-            </div>
-            <div>
-              <p className="text-2xl font-bold text-foreground">{loading ? "…" : m.value}</p>
-              <p className="text-xs text-muted-foreground">{m.label}</p>
-            </div>
-          </CardContent>
-        </Card>
-      ))}
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        {metrics.map((m) => (
+          <Card key={m.label} className="bg-card border-0">
+            <CardContent className="p-4 flex items-center gap-4">
+              <div className={`w-11 h-11 rounded-xl ${m.bg} flex items-center justify-center ${m.color}`}>
+                {m.icon}
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-foreground">{loading ? "…" : m.value}</p>
+                <p className="text-xs text-muted-foreground">{m.label}</p>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
     </div>
   );
 };

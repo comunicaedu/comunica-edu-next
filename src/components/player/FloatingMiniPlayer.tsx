@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Play, Pause, SkipForward, SkipBack, Volume2,
-  Mic, Clock, Minimize2, GripHorizontal
+  Mic, Clock, GripHorizontal, Repeat1, Wifi, WifiOff, Radio, SlidersHorizontal
 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import { useClientFeatures } from "@/hooks/useClientFeatures";
@@ -28,6 +28,8 @@ interface FloatingMiniPlayerProps {
   currentTime: number;
   musicVolume: number;
   spotVolume: number;
+  playlistName?: string | null;
+  nextSong?: string | null;
   onPlayPause: () => void;
   onNext: () => void;
   onPrevious: () => void;
@@ -48,14 +50,17 @@ const formatTime = (seconds: number) => {
 
 const FloatingMiniPlayer = ({
   currentSong, isPlaying, progress, duration, currentTime,
-  musicVolume, spotVolume,
+  musicVolume, spotVolume, playlistName, nextSong,
   onPlayPause, onNext, onPrevious,
   onMusicVolumeChange, onSpotVolumeChange, onSeek,
 }: FloatingMiniPlayerProps) => {
   const isMobile = useIsMobile();
   const [expanded, setExpanded] = useState(false);
   const [showVolumeMix, setShowVolumeMix] = useState(false);
-  const [currentClock, setCurrentClock] = useState("");
+  const [repeatSong, setRepeatSong] = useState(false);
+  const [isModoOff, setIsModoOff] = useState(false);
+  const [locutorOpen, setLocutorOpen] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState(() => {
     if (typeof window === "undefined") return { x: 0, y: 0 };
     return {
@@ -83,17 +88,6 @@ const FloatingMiniPlayer = ({
     });
   }, [isMobile]);
 
-  // Clock
-  useEffect(() => {
-    const tick = () => {
-      const now = new Date();
-      setCurrentClock(now.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }));
-    };
-
-    tick();
-    const id = setInterval(tick, 30000);
-    return () => clearInterval(id);
-  }, []);
 
   // Auto-collapse after idle
   const resetIdleTimer = useCallback(() => {
@@ -113,6 +107,19 @@ const FloatingMiniPlayer = ({
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
     };
   }, [expanded, resetIdleTimer]);
+
+  // Click outside to collapse
+  useEffect(() => {
+    if (!expanded) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (cardRef.current && !cardRef.current.contains(e.target as Node)) {
+        setExpanded(false);
+        setShowVolumeMix(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [expanded]);
 
   // Drag logic (desktop only)
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
@@ -236,7 +243,7 @@ const FloatingMiniPlayer = ({
         onPointerMove={handleInteraction}
         onClick={handleInteraction}
       >
-        <div className="bg-sidebar-background/95 backdrop-blur-xl border border-sidebar-border rounded-xl sm:rounded-2xl shadow-2xl overflow-hidden">
+        <div ref={cardRef} className="bg-sidebar-background/95 backdrop-blur-xl border border-sidebar-border rounded-xl sm:rounded-2xl shadow-2xl overflow-hidden">
           {!isMobile && (
             <div
               className="flex items-center justify-center pt-1.5 pb-0.5 cursor-grab active:cursor-grabbing"
@@ -262,75 +269,92 @@ const FloatingMiniPlayer = ({
           </div>
 
           {/* Main controls row */}
-          <div className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-2">
-            {/* Song info with EDU logo */}
+          <div className="flex items-center gap-4 px-3 py-2.5">
+            {/* Song info — título, playlist, próxima */}
             <div className="flex items-center gap-2 min-w-0 flex-1">
-              <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-primary/20 flex items-center justify-center shrink-0 overflow-hidden p-0">
+              <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center shrink-0 overflow-hidden">
                 <EduLogoIcon fillContainer />
               </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-[11px] sm:text-xs font-semibold text-sidebar-foreground truncate">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold text-sidebar-foreground truncate">
                   {currentSong?.title || "Nenhuma música"}
                 </p>
-                <p className="text-[10px] text-muted-foreground truncate">
-                  {currentSong?.artist || "ComunicaEDU"}
-                </p>
+                {playlistName ? (
+                  <p className="text-[10px] text-primary/80 truncate font-medium">▶ {playlistName}</p>
+                ) : (
+                  <p className="text-[10px] text-muted-foreground truncate">
+                    {currentSong?.artist || "ComunicaEDU"}
+                  </p>
+                )}
+                {nextSong && (
+                  <p className="text-[9px] text-muted-foreground/70 truncate">A seguir: {nextSong}</p>
+                )}
               </div>
             </div>
 
-            {/* Transport controls */}
-            <div className="flex items-center gap-0.5 sm:gap-1">
-              <button onClick={(e) => { e.stopPropagation(); onPrevious(); }} className="p-1.5 text-sidebar-foreground/70 hover:text-primary transition-colors duration-300">
+            {/* Controles: 🕐 ⊟mixer ↺ ◄ ▶ ► 🎤 📶 (()) */}
+            <div className="flex items-center gap-2 shrink-0">
+              {/* 🕐 relógio */}
+              <button type="button" title="Programar horário de ligar/desligar"
+                className="w-7 h-7 flex items-center justify-center text-sidebar-foreground/60 hover:text-primary transition-colors rounded-full">
+                <Clock className="h-3.5 w-3.5" />
+              </button>
+
+              {/* ⊟ mixer spots/música */}
+              <button type="button"
+                onClick={(e) => { e.stopPropagation(); setShowVolumeMix(v => !v); }}
+                title="Nivelar Spots / Música"
+                className={`w-7 h-7 flex items-center justify-center rounded-full transition-colors ${
+                  showVolumeMix ? "text-primary bg-primary/15" : "text-sidebar-foreground/60 hover:text-primary"
+                }`}>
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+              </button>
+
+              {/* ↺ repeat */}
+              <button type="button" onClick={(e) => { e.stopPropagation(); setRepeatSong(v => !v); }}
+                title={repeatSong ? "Repetir: ativado" : "Repetir música"}
+                className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors ${
+                  repeatSong ? "text-primary bg-primary/15" : "text-sidebar-foreground/60 hover:text-primary"
+                }`}>
+                <Repeat1 className="h-3.5 w-3.5" />
+              </button>
+
+              {/* ◄ ▶ ► */}
+              <button type="button" onClick={(e) => { e.stopPropagation(); onPrevious(); }} title="Anterior"
+                className="w-7 h-7 flex items-center justify-center text-sidebar-foreground/70 hover:text-primary transition-colors">
                 <SkipBack className="h-4 w-4" />
               </button>
-              <button
-                onClick={(e) => { e.stopPropagation(); onPlayPause(); }}
-                className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-primary text-primary-foreground flex items-center justify-center hover:scale-105 transition-all duration-300 shadow-lg shadow-primary/30"
-              >
+              <button type="button" onClick={(e) => { e.stopPropagation(); onPlayPause(); }} title={isPlaying ? "Pausar" : "Reproduzir"}
+                className="w-9 h-9 rounded-full bg-primary text-primary-foreground flex items-center justify-center hover:scale-105 transition-all shadow-lg shadow-primary/30">
                 {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
               </button>
-              <button onClick={(e) => { e.stopPropagation(); onNext(); }} className="p-1.5 text-sidebar-foreground/70 hover:text-primary transition-colors duration-300">
+              <button type="button" onClick={(e) => { e.stopPropagation(); onNext(); }} title="Próxima"
+                className="w-7 h-7 flex items-center justify-center text-sidebar-foreground/70 hover:text-primary transition-colors">
                 <SkipForward className="h-4 w-4" />
               </button>
-            </div>
 
-            {/* Right controls */}
-            <div className="flex items-center gap-0.5 sm:gap-1">
-              {!isMobile && (
-                <span className="text-[10px] font-mono text-primary px-1.5 py-0.5 bg-primary/10 rounded-md">
-                  {currentClock}
-                </span>
-              )}
-
-              <button
-                onClick={(e) => { e.stopPropagation(); setShowVolumeMix(!showVolumeMix); }}
-                className={`p-1.5 rounded-md transition-colors duration-300 ${showVolumeMix ? "text-primary bg-primary/15" : "text-sidebar-foreground/60 hover:text-primary"}`}
-                title="Mixagem de Volume"
-              >
-                <Volume2 className="h-4 w-4" />
+              {/* 🎤 mic */}
+              <button type="button" title="Gravar voz"
+                className="w-7 h-7 flex items-center justify-center text-sidebar-foreground/60 hover:text-primary transition-colors rounded-full">
+                <Mic className="h-3.5 w-3.5" />
               </button>
 
-              {!isMobile && isSectionVisible("spots") && (
-                <button
-                  className="p-1.5 text-sidebar-foreground/60 hover:text-primary transition-colors duration-300"
-                  title="Spots"
-                >
-                  <Mic className="h-3.5 w-3.5" />
-                </button>
-              )}
+              {/* 📶 offline */}
+              <button type="button" onClick={(e) => { e.stopPropagation(); setIsModoOff(v => !v); }}
+                title={isModoOff ? "Modo Offline ativado" : "Modo Offline"}
+                className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors ${
+                  isModoOff ? "text-primary bg-primary/15" : "text-sidebar-foreground/60 hover:text-primary"
+                }`}>
+                {isModoOff ? <WifiOff className="h-3.5 w-3.5" /> : <Wifi className="h-3.5 w-3.5" />}
+              </button>
 
-              {!isMobile && (
-                <button className="p-1.5 text-sidebar-foreground/60" title="Relógio">
-                  <Clock className="h-3.5 w-3.5" />
-                </button>
-              )}
-
-              <button
-                onClick={(e) => { e.stopPropagation(); setExpanded(false); setShowVolumeMix(false); }}
-                className="p-1.5 text-sidebar-foreground/60 hover:text-primary transition-colors duration-300"
-                title="Minimizar"
-              >
-                <Minimize2 className="h-3.5 w-3.5" />
+              {/* (()) locutor virtual */}
+              <button type="button" onClick={(e) => { e.stopPropagation(); setLocutorOpen(v => !v); }}
+                title="Locutor Virtual"
+                className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors ${
+                  locutorOpen ? "text-primary bg-primary/15" : "text-sidebar-foreground/60 hover:text-primary"
+                }`}>
+                <Radio className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>

@@ -94,6 +94,10 @@
     @apply border-transparent;
   }
 
+  .input-masked {
+    -webkit-text-security: disc;
+  }
+
   .floating-mini-player-bubble {
     border-color: hsl(var(--primary)) !important;
   }
@@ -130,12 +134,14 @@
   html {
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
+    overflow: hidden;
   }
 
   html,
   body {
     min-height: 100%;
     height: 100%;
+    overflow: hidden;
   }
 
   body {
@@ -185,7 +191,8 @@
     scrollbar-width: none;
   }
 
-  .scrollbar-none::-webkit-scrollbar {
+  .scrollbar-none::-webkit-scrollbar,
+  textarea.scrollbar-none::-webkit-scrollbar {
     display: none;
   }
 
@@ -207,6 +214,7 @@
     padding-right: max(var(--safe-area-right), 0px);
   }
 }
+
 
 @keyframes coverFadeIn {
   from { opacity: 0; }

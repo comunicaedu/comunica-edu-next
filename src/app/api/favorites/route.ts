@@ -1,47 +1,52 @@
 import { NextRequest, NextResponse } from "next/server";
-import { writeFile, readFile, mkdir } from "fs/promises";
-import path from "path";
+import { createClient } from "@supabase/supabase-js";
+import { resolveApiUser, effectiveUserId } from "@/lib/api-auth";
 
-const DATA_DIR = path.join(process.cwd(), "public", "data");
-const FAV_FILE = path.join(DATA_DIR, "user-favorites.json");
-
-interface FavEntry { song_id: string; favorited_at: string; }
-type FavStore = Record<string, FavEntry[]>;
-
-async function readFavs(): Promise<FavStore> {
-  try { return JSON.parse(await readFile(FAV_FILE, "utf-8")); } catch { return {}; }
-}
-async function writeFavs(data: FavStore) {
-  await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(FAV_FILE, JSON.stringify(data), "utf-8");
-}
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
 // GET /api/favorites?user_id=xxx
 export async function GET(req: NextRequest) {
-  const userId = req.nextUrl.searchParams.get("user_id");
-  if (!userId) return NextResponse.json({ favorites: [] });
-  const favs = await readFavs();
-  return NextResponse.json({ favorites: favs[userId] ?? [] });
+  const user = await resolveApiUser(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const targetUserId = req.nextUrl.searchParams.get("user_id") || undefined;
+  const uid = effectiveUserId(user, targetUserId);
+
+  const { data, error } = await supabase
+    .from("user_favorites")
+    .select("song_id, created_at")
+    .eq("user_id", uid)
+    .order("created_at", { ascending: false });
+
+  if (error) return NextResponse.json({ favorites: [] });
+  return NextResponse.json({ favorites: data ?? [] });
 }
 
 // POST /api/favorites — adiciona ou remove favorito
-// body: { user_id, song_id, action: "add"|"remove" }
+// body: { song_id, action: "add"|"remove" }
 export async function POST(req: NextRequest) {
-  const { user_id, song_id, action } = await req.json();
-  if (!user_id || !song_id) return NextResponse.json({ error: "Dados inválidos" }, { status: 400 });
+  const user = await resolveApiUser(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const favs = await readFavs();
-  if (!favs[user_id]) favs[user_id] = [];
+  const { song_id, action } = await req.json();
+  if (!song_id) return NextResponse.json({ error: "Dados inválidos" }, { status: 400 });
+
+  const uid = user.userId;
 
   if (action === "remove") {
-    favs[user_id] = favs[user_id].filter((f) => f.song_id !== song_id);
+    await supabase
+      .from("user_favorites")
+      .delete()
+      .eq("user_id", uid)
+      .eq("song_id", song_id);
   } else {
-    // add — evita duplicata
-    if (!favs[user_id].find((f) => f.song_id === song_id)) {
-      favs[user_id].push({ song_id, favorited_at: new Date().toISOString() });
-    }
+    await supabase
+      .from("user_favorites")
+      .upsert({ user_id: uid, song_id, created_at: new Date().toISOString() }, { onConflict: "user_id,song_id" });
   }
 
-  await writeFavs(favs);
   return NextResponse.json({ ok: true });
 }

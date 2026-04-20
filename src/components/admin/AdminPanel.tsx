@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePathname, useSearchParams, useRouter } from "next/navigation";
 import { LayoutDashboard, Users, Package, Palette, Tag } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { useUserPreferences } from "@/hooks/useUserPreferences";
 import AdminDashboard from "./AdminDashboard";
 import ClientManagement from "./ClientManagement";
 import PlanManagement from "@/components/PlanManagement";
@@ -12,52 +12,50 @@ import ThemeSettings from "./ThemeSettings";
 import GenreManagement from "./GenreManagement";
 
 const tabs = [
-  { id: "dashboard", label: "Dashboard", icon: <LayoutDashboard className="h-4 w-4" /> },
+  { id: "dashboard", label: "Resumo dos Dados", icon: <LayoutDashboard className="h-4 w-4" /> },
   { id: "clientes", label: "Clientes", icon: <Users className="h-4 w-4" /> },
   { id: "generos", label: "Gêneros", icon: <Tag className="h-4 w-4" /> },
   { id: "planos", label: "Planos & Serviços", icon: <Package className="h-4 w-4" /> },
   { id: "aparencia", label: "Aparência", icon: <Palette className="h-4 w-4" /> },
 ] as const;
 
-const ADMIN_TAB_KEY = "edu-admin-active-tab";
-const ADMIN_TAB_TS_KEY = "edu-admin-active-tab-ts";
 const ADMIN_TAB_RESTORE_LIMIT_MS = 5 * 60 * 1000;
 
 const isValidAdminTab = (tab: unknown): tab is string =>
   typeof tab === "string" && tabs.some((item) => item.id === tab);
 
-const getSavedAdminTab = (): string | null => {
-  if (typeof window === 'undefined') return null;
-  try {
-    const tab = localStorage.getItem(ADMIN_TAB_KEY);
-    const ts = localStorage.getItem(ADMIN_TAB_TS_KEY);
-    if (!tab || !ts || !isValidAdminTab(tab)) return null;
-    const elapsed = Date.now() - Number(ts);
-    if (elapsed > ADMIN_TAB_RESTORE_LIMIT_MS) return null;
-    return tab;
-  } catch {
-    return null;
-  }
-};
-
-const saveAdminTab = (tab: string) => {
-  try {
-    localStorage.setItem(ADMIN_TAB_KEY, tab);
-    localStorage.setItem(ADMIN_TAB_TS_KEY, String(Date.now()));
-  } catch {}
-};
-
 const AdminPanel = () => {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const router = useRouter();
+  const { prefs, loaded, updatePref } = useUserPreferences();
 
   const tabFromUrl = searchParams.get("tab");
-  const initialTab = isValidAdminTab(tabFromUrl) ? tabFromUrl : getSavedAdminTab() ?? "generos";
+  const initialTab = isValidAdminTab(tabFromUrl) ? tabFromUrl : "dashboard";
   const [activeTab, setActiveTab] = useState(initialTab);
 
+  // Restore saved tab from prefs once loaded (if no URL tab override)
   useEffect(() => {
-    saveAdminTab(activeTab);
+    if (!loaded) return;
+    const urlTab = searchParams.get("tab");
+    if (urlTab && isValidAdminTab(urlTab)) return; // URL takes priority
+    const savedTab = prefs.admin_tab;
+    const savedTs = prefs.admin_tab_ts ?? 0;
+    if (
+      savedTab &&
+      isValidAdminTab(savedTab) &&
+      Date.now() - savedTs <= ADMIN_TAB_RESTORE_LIMIT_MS
+    ) {
+      setActiveTab(savedTab);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    updatePref("admin_tab", activeTab);
+    updatePref("admin_tab_ts", Date.now());
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
   useEffect(() => {
@@ -71,7 +69,8 @@ const AdminPanel = () => {
   const handleTabChange = (tabId: string) => {
     if (!isValidAdminTab(tabId) || tabId === activeTab) return;
     setActiveTab(tabId);
-    saveAdminTab(tabId);
+    updatePref("admin_tab", tabId);
+    updatePref("admin_tab_ts", Date.now());
     const params = new URLSearchParams(searchParams.toString());
     params.set("section", "admin");
     params.set("tab", tabId);
@@ -99,22 +98,13 @@ const AdminPanel = () => {
         </div>
       </div>
 
-      <AnimatePresence mode="wait" initial={false}>
-        <motion.div
-          key={activeTab}
-          initial={{ opacity: 0, y: 6 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -4 }}
-          transition={{ duration: 0.2, ease: "easeOut" }}
-          className="space-y-6"
-        >
+      <div key={activeTab} className="space-y-6">
           {activeTab === "dashboard" && <AdminDashboard />}
           {activeTab === "clientes" && <ClientManagement />}
           {activeTab === "generos" && <GenreManagement />}
           {activeTab === "planos" && <PlanManagement />}
           {activeTab === "aparencia" && <><ThemeSettings /><BackgroundSettings /></>}
-        </motion.div>
-      </AnimatePresence>
+      </div>
     </div>
   );
 };

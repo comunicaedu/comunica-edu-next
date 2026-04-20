@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Mic, Play, Pause, Square, Volume2, Check, X, RotateCcw } from "lucide-react";
+import { Mic, Play, Pause, Square, Volume2, Check, X, RotateCcw, Lock, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { toast } from "sonner";
 import { getSupportedAudioMimeType } from "@/lib/mediaRecorderUtils";
+import { useClientFeatures } from "@/hooks/useClientFeatures";
 
 export type InsertMode = "queue" | "interrupt" | "scheduled";
 
@@ -32,12 +33,24 @@ const INSERT_MODES: { key: InsertMode; label: string; desc: string }[] = [
 export default function VoiceRecorderModal({
   isOpen, onClose, onInsert, onPreviewStart, onPreviewEnd,
 }: VoiceRecorderModalProps) {
+  const { isFeatureLocked, consumeFeature } = useClientFeatures();
+  const isInsertLocked = isFeatureLocked("locutor_ao_vivo");
+  const [lockedBadge, setLockedBadge] = useState(false);
+  const lockedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showBadge = () => {
+    setLockedBadge(true);
+    if (lockedTimer.current) clearTimeout(lockedTimer.current);
+    lockedTimer.current = setTimeout(() => setLockedBadge(false), 3000);
+  };
   const [phase, setPhase] = useState<"idle" | "recording" | "preview">("idle");
   const [countdown, setCountdown]     = useState(MAX_SECONDS);
   const [previewPlaying, setPreviewPlaying] = useState(false);
   const [previewVolume, setPreviewVolume]   = useState(0.9);
   const [insertMode, setInsertMode]         = useState<InsertMode>("queue");
   const [blobUrl, setBlobUrl]               = useState<string | null>(null);
+  const [isUploading, setIsUploading]       = useState(false);
+  const recordedBlobRef                     = useRef<Blob | null>(null);
+  const recordedDurationRef                 = useRef<number>(0);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioContextRef  = useRef<AudioContext | null>(null);
@@ -102,6 +115,8 @@ export default function VoiceRecorderModal({
       recorder.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: mimeType });
         const url  = URL.createObjectURL(blob);
+        recordedBlobRef.current = blob;
+        recordedDurationRef.current = MAX_SECONDS - countdown;
         setBlobUrl(url);
         setPhase("preview");
       };
@@ -142,15 +157,58 @@ export default function VoiceRecorderModal({
     if (previewAudioRef.current) previewAudioRef.current.volume = previewVolume;
   }, [previewVolume]);
 
-  /* ── insert into player ── */
-  const handleInsert = () => {
-    if (!blobUrl) return;
-    // Use the `direct:` prefix so the audio cascade returns the blob URL directly
-    onInsert(`direct:${blobUrl}`, insertMode, `Gravação ${new Date().toLocaleTimeString("pt-BR")}`);
-    // Don't revoke blobUrl yet — player needs it until the song finishes
-    resetState();
-    onClose();
-    toast.success("Gravação inserida!");
+  /* ── insert into player (uploads to Supabase first) ── */
+  const handleInsert = async () => {
+    if (!blobUrl || !recordedBlobRef.current) return;
+    setIsUploading(true);
+    try {
+      const { supabase } = await import("@/lib/supabase/client");
+      let { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        const { data: refreshed } = await supabase.auth.refreshSession();
+        session = refreshed.session;
+      }
+      if (!session?.access_token) {
+        toast.error("Sessão expirada. Faça login novamente.");
+        setIsUploading(false);
+        return;
+      }
+
+      const title = `Gravação ${new Date().toLocaleString("pt-BR")}`;
+      const ext = (recordedBlobRef.current.type.split("/")[1] || "webm").split(";")[0];
+      const file = new File([recordedBlobRef.current], `recording.${ext}`, {
+        type: recordedBlobRef.current.type,
+      });
+
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("title", title);
+      fd.append("duration", String(recordedDurationRef.current));
+
+      const res = await fetch("/api/voice-recordings", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        body: fd,
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        toast.error(j.error || "Erro ao salvar gravação");
+        setIsUploading(false);
+        return;
+      }
+      const { recording } = await res.json();
+
+      // Insere no player usando a URL do Supabase (não mais blob local)
+      onInsert(recording.url, insertMode, title);
+      consumeFeature("locutor_ao_vivo");
+      resetState();
+      onClose();
+      toast.success("Gravação salva e inserida!");
+    } catch {
+      toast.error("Falha ao enviar gravação.");
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   const resetState = () => {
@@ -330,14 +388,26 @@ export default function VoiceRecorderModal({
               </div>
             </div>
 
+            {/* Badge de upgrade */}
+            {lockedBadge && (
+              <div className="flex justify-center pointer-events-none">
+                <div className="flex items-center gap-1.5 bg-background/90 backdrop-blur-sm border border-border/50 rounded-full px-3 py-1.5 shadow-md whitespace-nowrap">
+                  <Lock className="h-3 w-3 text-primary shrink-0" />
+                  <p className="text-xs font-medium text-foreground">Atualize seu plano para usar esse recurso.</p>
+                </div>
+              </div>
+            )}
             {/* Actions */}
             <div className="flex gap-2 pt-1">
-              <Button type="button" variant="outline" size="sm" onClick={handleClose} className="flex-1 text-xs">
+              <Button type="button" variant="outline" size="sm" onClick={handleClose} disabled={isUploading} className="flex-1 text-xs">
                 Cancelar
               </Button>
-              <Button type="button" size="sm" onClick={handleInsert}
+              <Button type="button" size="sm" disabled={isUploading} onClick={isInsertLocked ? showBadge : handleInsert}
                 className="flex-1 text-xs bg-primary text-primary-foreground">
-                <Check className="h-3.5 w-3.5 mr-1" /> Inserir no Player
+                {isUploading
+                  ? <><Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> Salvando...</>
+                  : <><Check className="h-3.5 w-3.5 mr-1" /> Inserir no Player</>
+                }
               </Button>
             </div>
           </div>

@@ -27,25 +27,34 @@ interface PlayHistory {
   timestamp: number;
 }
 
-const STORAGE_KEY = "smart-shuffle-history";
 const REPLAY_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 const NEW_SONG_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
 
+// ── External history source (set by the player component via prefs) ──
+let _history: PlayHistory[] = [];
+let _onSave: ((history: PlayHistory[]) => void) | null = null;
+
+/** Initialize the shuffle system with prefs-backed history */
+export function initShuffleHistory(
+  initialHistory: PlayHistory[],
+  onSave: (history: PlayHistory[]) => void,
+) {
+  _history = initialHistory ?? [];
+  _onSave = onSave;
+}
+
 function getHistory(): PlayHistory[] {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-  } catch {
-    return [];
-  }
+  return _history;
 }
 
 function saveHistory(history: PlayHistory[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+  _history = history;
+  _onSave?.(history);
 }
 
 /** Record a song as played for a playlist */
 export function markSongPlayed(playlistId: string, songId: string) {
-  const history = getHistory();
+  const history = [...getHistory()];
   const existing = history.find(h => h.playlistId === playlistId);
   if (existing) {
     if (!existing.playedIds.includes(songId)) {

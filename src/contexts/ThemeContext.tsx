@@ -105,7 +105,9 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
 
   const syncToCloud = useCallback(async (c: ThemeColors) => {
     try {
-      await supabase.functions.invoke("admin-clients?action=theme-set", { body: { colors: c } });
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      await supabase.from("profiles").update({ theme_colors: JSON.stringify(c) }).eq("user_id", user.id);
     } catch {}
   }, []);
 
@@ -122,15 +124,18 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
 
   // Sincroniza com servidor ao carregar
   useEffect(() => {
-    supabase.functions.invoke("admin-clients?action=theme-get", { body: {} })
-      .then(({ data, error }) => {
-        if (!error && data?.colors) {
-          const remote = { ...defaultTheme, ...data.colors } as ThemeColors;
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) return;
+      const { data } = await supabase.from("profiles").select("theme_colors").eq("user_id", user.id).single();
+      if (data?.theme_colors) {
+        try {
+          const remote = { ...defaultTheme, ...JSON.parse(data.theme_colors) } as ThemeColors;
           setColorsState(remote);
           applyTheme(remote);
-        }
-      })
-      .catch(() => {});
+          localStorage.setItem("comunica-edu-theme", JSON.stringify(remote));
+        } catch {}
+      }
+    });
   }, []);
 
   return (

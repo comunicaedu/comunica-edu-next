@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Upload, Plus } from "lucide-react";
+import { Upload, Plus, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { toast } from "sonner";
 import MusicUpload from "./MusicUpload";
 import PlaylistSection from "./PlaylistSection";
 import CreatePlaylistModal from "./CreatePlaylistModal";
@@ -21,6 +22,8 @@ interface Song {
 interface MusicHubProps {
   currentSong: Song | null;
   isPlaying: boolean;
+  isCreateLocked?: boolean;
+  isImportLocked?: boolean;
   onPlay: (song: Song) => void;
   onPause: () => void;
   onPlayImported?: (song: Song) => void;
@@ -32,7 +35,7 @@ interface MusicHubProps {
   onToggleRepeatPlaylist?: (playlistId: string) => void;
 }
 
-const MusicHub = ({ currentSong, isPlaying, onPlay, onPause, onPlayImported, isYouTubeLoading, onQueueChange, activePlaylistId, onMoodActive, repeatPlaylistId, onToggleRepeatPlaylist }: MusicHubProps) => {
+const MusicHub = ({ currentSong, isPlaying, isCreateLocked, isImportLocked, onPlay, onPause, onPlayImported, isYouTubeLoading, onQueueChange, activePlaylistId, onMoodActive, repeatPlaylistId, onToggleRepeatPlaylist }: MusicHubProps) => {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
 
@@ -42,19 +45,19 @@ const MusicHub = ({ currentSong, isPlaying, onPlay, onPause, onPlayImported, isY
         <div className="flex items-center gap-2 flex-wrap min-h-[2.5rem]">
         <Button
           size="sm"
-          onClick={() => setUploadOpen(true)}
+          onClick={() => isImportLocked ? toast.warning("Recurso bloqueado. Atualize seu plano.") : setUploadOpen(true)}
           className="shrink-0 gap-2 bg-primary text-primary-foreground hover:bg-primary hover:text-white hover:[text-shadow:0_0_8px_rgba(255,255,255,0.9)] active:bg-primary focus:bg-primary active:scale-95 transition-all w-36"
         >
-          <Upload className="h-4 w-4" />
+          {isImportLocked ? <Lock className="h-4 w-4" /> : <Upload className="h-4 w-4" />}
           Enviar Música
         </Button>
 
         <Button
           size="sm"
-          onClick={() => setCreateOpen(true)}
+          onClick={() => isCreateLocked ? toast.warning("Recurso bloqueado. Atualize seu plano.") : setCreateOpen(true)}
           className="shrink-0 gap-2 bg-primary text-primary-foreground hover:bg-primary hover:text-white hover:[text-shadow:0_0_8px_rgba(255,255,255,0.9)] active:bg-primary focus:bg-primary active:scale-95 transition-all w-36"
         >
-          <Plus className="h-4 w-4" />
+          {isCreateLocked ? <Lock className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
           Criar
         </Button>
         </div>
@@ -62,7 +65,7 @@ const MusicHub = ({ currentSong, isPlaying, onPlay, onPause, onPlayImported, isY
 
       {/* Upload Modal */}
       <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
-        <DialogContent hideCloseButton className="sm:max-w-md max-h-[90dvh] overflow-y-auto scrollbar-none">
+        <DialogContent hideCloseButton className="sm:max-w-md h-[460px] overflow-y-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-white">
               <Upload className="h-5 w-5 text-primary" /> Enviar Música

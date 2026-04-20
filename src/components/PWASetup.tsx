@@ -7,7 +7,6 @@ export default function PWASetup() {
     if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
 
     navigator.serviceWorker.getRegistrations().then((registrations) => {
-      // Desregistra qualquer SW antigo (ex: do Lovable) que não seja o nosso sw.js
       const toRemove = registrations.filter((reg) => {
         const scriptUrl =
           reg.active?.scriptURL ||
@@ -19,7 +18,6 @@ export default function PWASetup() {
 
       return Promise.all(toRemove.map((reg) => reg.unregister()));
     }).then(() => {
-      // Limpa caches antigos do Lovable no navegador
       return caches.keys().then((keys) =>
         Promise.all(
           keys

@@ -1,7 +1,10 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Music, Search, ImagePlus, Loader2, Plus, Trash2, Heart, Play, Pause, Volume2, VolumeX, Clock } from "lucide-react";
+import { Music, Search, ImagePlus, Loader2, Plus, Trash2, Heart, Play, Pause, Volume2, VolumeX, Clock, Lock } from "lucide-react";
+import { useClientFeatures } from "@/hooks/useClientFeatures";
+import { useUserPreferences } from "@/hooks/useUserPreferences";
+import { isYouTubeQuotaExhausted, markYouTubeQuotaExhausted, isQuotaError } from "@/lib/youtubeQuota";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import PlaylistScheduleDialog from "@/components/player/PlaylistScheduleDialog";
 import { Input } from "@/components/ui/input";
@@ -10,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { supabase } from "@/lib/supabase/client";
 import { toast } from "sonner";
 import { generateEduCover } from "@/lib/generateEduCover";
+import { authedFetch } from "@/lib/authedFetch";
 
 interface Song {
   id: string;
@@ -86,6 +90,16 @@ const loadYouTubeAPI = async (): Promise<void> => {
 };
 
 const CreatePlaylistModal = ({ open, onOpenChange }: CreatePlaylistModalProps) => {
+  const { isFeatureLocked, consumeFeature } = useClientFeatures();
+  const { prefs, updatePref } = useUserPreferences();
+  const canCreate = !isFeatureLocked("criar_playlists");
+  const [lockedBadge, setLockedBadge] = useState(false);
+  const lockedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showBadge = () => {
+    setLockedBadge(true);
+    if (lockedTimer.current) clearTimeout(lockedTimer.current);
+    lockedTimer.current = setTimeout(() => setLockedBadge(false), 3000);
+  };
   const [name, setName] = useState("");
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverPreview, setCoverPreview] = useState<string | null>(null);
@@ -125,9 +139,9 @@ const CreatePlaylistModal = ({ open, onOpenChange }: CreatePlaylistModalProps) =
       setResults([]);
       setPreviewId(null);
       stopPreview();
-      // Sync preview volume with main player settings
+      // Sync preview volume with main player settings (from prefs)
       try {
-        const controls = JSON.parse(localStorage.getItem("edu-player-controls") || "{}");
+        const controls = (prefs.player_controls ?? {}) as Record<string, unknown>;
         const muted = controls.isMuted === true || controls.musicVolume === 0;
         const vol = typeof controls.musicVolume === "number" ? controls.musicVolume : 0.7;
         setPreviewMuted(muted);
@@ -340,10 +354,14 @@ const CreatePlaylistModal = ({ open, onOpenChange }: CreatePlaylistModalProps) =
       return false;
     }
 
-    const directUrl = song.file_path.startsWith("direct:") ? song.file_path.replace("direct:", "") : null;
+    const fp = song.file_path;
+    const directUrl = fp.startsWith("direct:") ? fp.replace("direct:", "") : null;
+    // If already a full URL (resolved by API) use it directly; otherwise resolve via storage
     const publicUrl = directUrl
       ? directUrl
-      : supabase.storage.from("audio").getPublicUrl(song.file_path).data.publicUrl;
+      : fp.startsWith("http")
+        ? fp
+        : supabase.storage.from("audio").getPublicUrl(fp).data.publicUrl;
 
     const audio = new Audio(publicUrl);
     audio.crossOrigin = "anonymous";
@@ -389,6 +407,7 @@ const CreatePlaylistModal = ({ open, onOpenChange }: CreatePlaylistModalProps) =
   }, [schedulePreviewStop, startPreviewNormalization, stopPreview]);
 
   const searchPreviewFallback = useCallback(async (song: Song) => {
+    if (isYouTubeQuotaExhausted()) return null;
     try {
       const { data, error } = await supabase.functions.invoke("youtube-search", {
         body: {
@@ -398,7 +417,13 @@ const CreatePlaylistModal = ({ open, onOpenChange }: CreatePlaylistModalProps) =
         },
       });
 
-      if (error || !data?.videoId) {
+      if (error) {
+        if (isQuotaError(String(error?.message ?? error))) markYouTubeQuotaExhausted();
+        return null;
+      }
+      if (!data?.videoId) return null;
+      if (data?.quotaExceeded || isQuotaError(String(data?.error ?? ""))) {
+        markYouTubeQuotaExhausted();
         return null;
       }
 
@@ -449,39 +474,50 @@ const CreatePlaylistModal = ({ open, onOpenChange }: CreatePlaylistModalProps) =
     setSearching(true);
 
     try {
-      const { data } = await supabase
-        .from("songs")
-        .select("id, title, artist, cover_url, youtube_video_id, file_path")
-        .or(`title.ilike.%${q}%,artist.ilike.%${q}%,genre.ilike.%${q}%`)
-        .order("title")
-        .limit(20);
+      const res = await authedFetch(`/api/songs?search=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      const songs: any[] = data.songs ?? data ?? [];
 
-      // Only songs we can definitely play — mirrors useAudioCascade.ts logic:
-      // hasLocal  = file_path exists AND not "youtube:" AND not "imported/"
-      // hasYtPath = file_path starts with "youtube:" AND no "pending"
-      // hasVideoId = youtube_video_id is set, not "pending", length >= 5
-      const dbSongs: Song[] = (data || [])
+      const quotaOut = isYouTubeQuotaExhausted();
+      const dbSongs: Song[] = songs
         .filter(s => {
           const fp = s.file_path ?? "";
           const hasLocal = fp && !fp.startsWith("youtube:") && !fp.startsWith("imported/");
           const hasYtPath = fp.startsWith("youtube:") && !fp.includes("pending");
           const hasVideoId = !!(s.youtube_video_id && s.youtube_video_id !== "pending" && s.youtube_video_id.length >= 5);
+          // When quota is exhausted only show songs with a real local file
+          if (quotaOut) return !!hasLocal;
           return !!(hasLocal || hasYtPath || hasVideoId);
         })
         .map(s => ({ ...s, source: "db" as const }));
       setResults(dbSongs);
+      // Only append YouTube search result when quota is available
+      if (!quotaOut) searchYouTube(q, dbSongs);
+    } catch {
+      setResults([]);
     } finally {
       setSearching(false);
     }
   }, []);
 
   const searchYouTube = async (q: string, existingResults: Song[]) => {
+    if (isYouTubeQuotaExhausted()) return;
     try {
       const { data, error } = await supabase.functions.invoke("youtube-search", {
         body: { query: q, title: q, artist: "" },
       });
 
-      if (error || !data?.videoId) {
+      if (error) {
+        if (isQuotaError(String(error?.message ?? error))) markYouTubeQuotaExhausted();
+        setResults(existingResults);
+        return;
+      }
+
+      if (!data?.videoId) { setResults(existingResults); return; }
+
+      // Detect quota signal inside data
+      if (data?.quotaExceeded || isQuotaError(String(data?.error ?? ""))) {
+        markYouTubeQuotaExhausted();
         setResults(existingResults);
         return;
       }
@@ -686,14 +722,11 @@ const CreatePlaylistModal = ({ open, onOpenChange }: CreatePlaylistModalProps) =
 
       // Marcar como destaque se o coração foi ativado
       if (isFeatured) {
-        try {
-          const favKey = "edu_fav_playlists";
-          const saved = JSON.parse(localStorage.getItem(favKey) || "[]");
-          if (!saved.includes(createdPlaylist.id)) {
-            localStorage.setItem(favKey, JSON.stringify([...saved, createdPlaylist.id]));
-          }
-        } catch {}
-        await fetch("/api/playlists", {
+        const current = prefs.fav_playlists ?? [];
+        if (!current.includes(createdPlaylist.id)) {
+          updatePref("fav_playlists", [...current, createdPlaylist.id]);
+        }
+        await authedFetch("/api/playlists", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: createdPlaylist.id, is_featured: true }),
@@ -703,6 +736,7 @@ const CreatePlaylistModal = ({ open, onOpenChange }: CreatePlaylistModalProps) =
       setCreatedPlaylistId(createdPlaylist.id);
       window.dispatchEvent(new CustomEvent("playlist-created", { detail: { playlist: createdPlaylist } }));
 
+      await consumeFeature("criar_playlists");
       stopPreview();
       toast.success(`Playlist "${name.trim()}" criada!`);
       if (!isFeatured) onOpenChange(false);
@@ -742,7 +776,7 @@ const CreatePlaylistModal = ({ open, onOpenChange }: CreatePlaylistModalProps) =
                   <ImagePlus className="h-7 w-7 text-muted-foreground" />
                 )}
               </button>
-              <input ref={coverRef} type="file" accept="image/*" onChange={handleCoverChange} className="hidden" />
+              <input ref={coverRef} type="file" accept="image/*" onChange={handleCoverChange} className="hidden" title="Capa da playlist" aria-label="Capa da playlist" />
               <div className="flex-1 space-y-2">
                 <Label className="text-xs text-muted-foreground">Nome da Playlist</Label>
                 <div className="flex items-center gap-1.5">
@@ -913,9 +947,17 @@ const CreatePlaylistModal = ({ open, onOpenChange }: CreatePlaylistModalProps) =
             )}
           </div>
 
+          {/* Badge de upgrade */}
+          <div className={`relative flex justify-center pointer-events-none transition-all duration-300 ${lockedBadge ? "opacity-100" : "opacity-0 -translate-y-1"}`}>
+            <div className="flex items-center gap-1.5 bg-background/90 backdrop-blur-sm border border-border/50 rounded-full px-3 py-1.5 shadow-md whitespace-nowrap">
+              <Lock className="h-3 w-3 text-primary shrink-0" />
+              <p className="text-xs font-medium text-foreground">Atualize seu plano para usar esse recurso.</p>
+            </div>
+          </div>
+
           <Button
-            onClick={handleCreate}
-            disabled={saving || !name.trim()}
+            onClick={canCreate ? handleCreate : showBadge}
+            disabled={!canCreate ? false : (saving || !name.trim())}
             className="w-full shrink-0 font-semibold bg-primary text-primary-foreground hover:bg-primary hover:text-white hover:[text-shadow:0_0_8px_rgba(255,255,255,0.9)] transition-all"
           >
             {saving ? (
