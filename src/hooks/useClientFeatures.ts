@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase/client";
+import { useCurrentUser } from "./useCurrentUser";
 
 export interface ClientFeature {
   feature_key: string;
@@ -43,15 +44,26 @@ const SECTION_TO_FEATURE: Partial<Record<string, FeatureKey>> = {
 };
 
 export const useClientFeatures = () => {
+  const { userId, isAdmin, isLoading: userLoading } = useCurrentUser();
   const [features, setFeatures] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
-  const [isAdmin, setIsAdmin] = useState(false);
   const userIdRef = useRef<string | null>(null);
 
   useEffect(() => {
+    // Wait until useCurrentUser resolves
+    if (userLoading) return;
+
     let cancelled = false;
     let pollId: ReturnType<typeof setInterval> | null = null;
     let focusHandler: (() => void) | null = null;
+
+    // Reset state when user changes
+    userIdRef.current = userId;
+    if (!userId) {
+      setFeatures({});
+      setLoading(false);
+      return;
+    }
 
     const loadFeatures = async () => {
       const uid = userIdRef.current;
@@ -72,50 +84,21 @@ export const useClientFeatures = () => {
       setLoading(false);
     };
 
-    const init = async () => {
-      // Tenta getSession primeiro (mais rápido), depois getUser como fallback
-      let userId: string | null = null;
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        userId = session.user.id;
-      } else {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) userId = user.id;
-      }
+    loadFeatures();
 
-      if (cancelled || !userId) { setLoading(false); return; }
-      userIdRef.current = userId;
+    if (!cancelled) {
+      pollId = setInterval(loadFeatures, 3_000);
+    }
 
-      // Check if admin
-      const { data: roleRow } = await supabase
-        .from("user_roles")
-        .select("role")
-        .eq("user_id", userId)
-        .eq("role", "admin")
-        .maybeSingle();
-      if (!cancelled) setIsAdmin(!!roleRow);
-
-      // Primeira carga
-      await loadFeatures();
-
-      // Polling a cada 3 segundos
-      if (!cancelled) {
-        pollId = setInterval(loadFeatures, 3_000);
-      }
-
-      // Recarrega ao voltar para a aba
-      focusHandler = () => loadFeatures();
-      window.addEventListener("focus", focusHandler);
-    };
-
-    init();
+    focusHandler = () => loadFeatures();
+    window.addEventListener("focus", focusHandler);
 
     return () => {
       cancelled = true;
       if (pollId) clearInterval(pollId);
       if (focusHandler) window.removeEventListener("focus", focusHandler);
     };
-  }, []);
+  }, [userId, userLoading]);
 
   const isFeatureLocked = useCallback((featureKey: string): boolean => {
     if (isAdmin) return false;
