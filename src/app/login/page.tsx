@@ -80,6 +80,38 @@ export default function LoginPage() {
 
     setLoading(true);
     try {
+      // Limpa sessão anterior e estado residual antes de logar
+      await supabase.auth.signOut();
+      localStorage.removeItem("edu-admin-return-session");
+      localStorage.removeItem("edu-impersonated-username");
+      localStorage.removeItem("edu-username");
+
+      // Caches POR_USUARIO — limpar ao trocar de usuário
+      try {
+        localStorage.removeItem("user-logo");
+        localStorage.removeItem("edu_fav_genres");
+        localStorage.removeItem("avatar-position-config");
+
+        // Chaves dinâmicas POR_USUARIO — remover por prefixo
+        const dynamicPrefixes = [
+          "playlists-cache",
+          "edu-fav-",
+          "draggable-adjust-",
+          "edu-player-state",
+        ];
+        const toDelete: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (!key) continue;
+          if (dynamicPrefixes.some(p => key.startsWith(p))) {
+            toDelete.push(key);
+          }
+        }
+        toDelete.forEach(k => localStorage.removeItem(k));
+
+        sessionStorage.clear();
+      } catch {}
+
       // Tenta username@comunicaedu.app primeiro
       let { data, error: authError } = await supabase.auth.signInWithPassword({
         email: `${uname}@comunicaedu.app`,
