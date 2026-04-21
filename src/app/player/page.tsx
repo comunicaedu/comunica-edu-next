@@ -328,6 +328,7 @@ function PlayerPageContent() {
   // Avatar: inicia null (sem hydration mismatch), carrega do localStorage antes do primeiro paint
   const [userAvatar, setUserAvatar] = useState<string | null>(null);
   const [userAvatarStyle, setUserAvatarStyle] = useState<AvatarCoverStyle | null>(null);
+  const [avatarLoaded, setAvatarLoaded] = useState(false);
 
   const [avatarZoomed, setAvatarZoomed] = useState(false);
   const [avatarEditMode, setAvatarEditMode] = useState(false);
@@ -633,68 +634,63 @@ function PlayerPageContent() {
 
   // ── Load user avatar — lógica simples: busca direto do banco pelo ID do usuário logado ──
   const loadAvatar = useCallback(async () => {
-    const { data: { user } } = await supabase.auth.getUser();
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
 
-    if (!user) {
-      // Sem sessão (tela do ouvinte): busca avatar via cache do servidor
-      try {
-        const res = await authedFetch("/api/owner-avatar");
-        const json = await res.json();
-        if (json?.avatar_url && !BLOCKED_AVATAR_DOMAINS.some((d) => json.avatar_url.includes(d))) {
-          setUserAvatar(json.avatar_url);
-        }
-      } catch { /* silencioso */ }
-      return;
-    }
-
-    setBroadcastUserId(user.id);
-
-    // Carrega estilo do avatar — será aplicado pelo useEffect de sync de prefs
-    if (prefs.avatar_styles?.[user.id]) {
-      setUserAvatarStyle(prefs.avatar_styles[user.id] as unknown as AvatarCoverStyle);
-    }
-
-    // Busca avatar direto do banco pelo ID do usuário logado
-    // Funciona corretamente durante impersonação: se o admin virou o cliente,
-    // user.id é o ID do cliente e o avatar do cliente é carregado automaticamente.
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("avatar_url")
-      .eq("user_id", user.id)
-      .single();
-
-    if (profile?.avatar_url && !BLOCKED_AVATAR_DOMAINS.some((d) => profile.avatar_url.includes(d))) {
-      // Valida que o avatar pertence a ESTE usuário:
-      // - Se é URL do storage (/avatars/), deve conter o user.id deste usuário
-      // - Se é data:, pode ser contaminação do localStorage — rejeita para clientes não-admin
-      const url = profile.avatar_url;
-      const isStorageUrl = url.includes("/avatars/");
-      const belongsToUser = !isStorageUrl || url.includes(user.id);
-      const isDataUrl = url.startsWith("data:");
-
-      // Verifica se é admin para decidir se data: URLs são válidas
-      const { data: roleRow } = await supabase
-        .from("user_roles")
-        .select("role")
-        .eq("user_id", user.id)
-        .eq("role", "admin")
-        .maybeSingle();
-      const userIsAdmin = !!roleRow;
-
-      if (isDataUrl && !userIsAdmin) {
-        // Data URL no perfil de cliente = contaminação do localStorage do admin → limpa
-        setUserAvatar(null);
-        supabase.from("profiles").update({ avatar_url: null }).eq("user_id", user.id);
-      } else if (isStorageUrl && !belongsToUser) {
-        // URL de storage de outro usuário = contaminação → limpa
-        setUserAvatar(null);
-        supabase.from("profiles").update({ avatar_url: null }).eq("user_id", user.id);
-      } else {
-        setUserAvatar(url);
+      if (!user) {
+        // Sem sessão (tela do ouvinte): busca avatar via cache do servidor
+        try {
+          const res = await authedFetch("/api/owner-avatar");
+          const json = await res.json();
+          if (json?.avatar_url && !BLOCKED_AVATAR_DOMAINS.some((d) => json.avatar_url.includes(d))) {
+            setUserAvatar(json.avatar_url);
+          }
+        } catch { /* silencioso */ }
+        return;
       }
-    } else {
-      // Usuário logado sem avatar no banco — mostra null (sem avatar)
-      setUserAvatar(null);
+
+      setBroadcastUserId(user.id);
+
+      // Carrega estilo do avatar — será aplicado pelo useEffect de sync de prefs
+      if (prefs.avatar_styles?.[user.id]) {
+        setUserAvatarStyle(prefs.avatar_styles[user.id] as unknown as AvatarCoverStyle);
+      }
+
+      // Busca avatar direto do banco pelo ID do usuário logado
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("avatar_url")
+        .eq("user_id", user.id)
+        .single();
+
+      if (profile?.avatar_url && !BLOCKED_AVATAR_DOMAINS.some((d) => profile.avatar_url.includes(d))) {
+        const url = profile.avatar_url;
+        const isStorageUrl = url.includes("/avatars/");
+        const belongsToUser = !isStorageUrl || url.includes(user.id);
+        const isDataUrl = url.startsWith("data:");
+
+        const { data: roleRow } = await supabase
+          .from("user_roles")
+          .select("role")
+          .eq("user_id", user.id)
+          .eq("role", "admin")
+          .maybeSingle();
+        const userIsAdmin = !!roleRow;
+
+        if (isDataUrl && !userIsAdmin) {
+          setUserAvatar(null);
+          supabase.from("profiles").update({ avatar_url: null }).eq("user_id", user.id);
+        } else if (isStorageUrl && !belongsToUser) {
+          setUserAvatar(null);
+          supabase.from("profiles").update({ avatar_url: null }).eq("user_id", user.id);
+        } else {
+          setUserAvatar(url);
+        }
+      } else {
+        setUserAvatar(null);
+      }
+    } finally {
+      setAvatarLoaded(true);
     }
   }, []);
 
@@ -754,8 +750,10 @@ function PlayerPageContent() {
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
       if (event === "SIGNED_IN" || event === "USER_UPDATED") {
+        setAvatarLoaded(false);
         loadAvatar();
       } else if (event === "SIGNED_OUT") {
+        setAvatarLoaded(false);
         setUserAvatar(null);
         setUserAvatarStyle(null);
       }
@@ -2486,7 +2484,7 @@ function PlayerPageContent() {
                 </button>
               </div>
             )}
-            {userLoading ? null : userAvatar ? (
+            {userLoading || !avatarLoaded ? null : userAvatar ? (
               <div className="w-20 h-20 rounded-full overflow-hidden shrink-0 -translate-x-[15%] translate-y-[10%]">
                 <img
                   src={userAvatar}
