@@ -32,6 +32,7 @@ import { supabase } from "@/lib/supabase/client";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useClientFeatures } from "@/hooks/useClientFeatures";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
+import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { cacheAudioUrl, getCachedAudioUrl } from "@/lib/audioCache";
 import { markSongPlayed, buildSmartQueue, initShuffleHistory } from "@/hooks/useSmartShuffle";
 import { useActivityTracker } from "@/hooks/useActivityTracker";
@@ -364,6 +365,7 @@ function PlayerPageContent() {
   const { resetTheme } = useTheme();
   const { isSectionLocked, isSectionVisible, features, isFeatureLocked } = useClientFeatures();
   const { isAdmin, loading: isAdminLoading } = useIsAdmin();
+  const { isLoading: userLoading } = useCurrentUser();
   const audioRef = useRef<HTMLAudioElement>(null);
   const lastGoNextTimeRef = useRef<number>(0);
   const queueRef = useRef<{ queue: Song[]; queueIndex: number; activePlaylistId: string | null }>({ queue: [], queueIndex: 0, activePlaylistId: null });
@@ -747,6 +749,19 @@ function PlayerPageContent() {
       document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, [applyFreshAvatar, loadAvatar]);
+
+  // Reload avatar when auth state changes (login/logout/user switch)
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_IN" || event === "USER_UPDATED") {
+        loadAvatar();
+      } else if (event === "SIGNED_OUT") {
+        setUserAvatar(null);
+        setUserAvatarStyle(null);
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, [loadAvatar]);
 
   // Click outside to dismiss avatar zoom
   useEffect(() => {
@@ -2471,7 +2486,7 @@ function PlayerPageContent() {
                 </button>
               </div>
             )}
-            {userAvatar ? (
+            {userLoading ? null : userAvatar ? (
               <div className="w-20 h-20 rounded-full overflow-hidden shrink-0 -translate-x-[15%] translate-y-[10%]">
                 <img
                   src={userAvatar}
