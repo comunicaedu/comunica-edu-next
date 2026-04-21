@@ -329,6 +329,7 @@ function PlayerPageContent() {
   const [userAvatar, setUserAvatar] = useState<string | null>(null);
   const [userAvatarStyle, setUserAvatarStyle] = useState<AvatarCoverStyle | null>(null);
   const [avatarLoaded, setAvatarLoaded] = useState(false);
+  const [displayName, setDisplayName] = useState<string | null>(null);
 
   const [avatarZoomed, setAvatarZoomed] = useState(false);
   const [avatarEditMode, setAvatarEditMode] = useState(false);
@@ -639,6 +640,7 @@ function PlayerPageContent() {
 
       if (!user) {
         // Sem sessão (tela do ouvinte): busca avatar via cache do servidor
+        setDisplayName(null);
         try {
           const res = await authedFetch("/api/owner-avatar");
           const json = await res.json();
@@ -659,9 +661,11 @@ function PlayerPageContent() {
       // Busca avatar direto do banco pelo ID do usuário logado
       const { data: profile } = await supabase
         .from("profiles")
-        .select("avatar_url")
+        .select("avatar_url, display_name")
         .eq("user_id", user.id)
         .single();
+
+      setDisplayName(profile?.display_name ?? null);
 
       if (profile?.avatar_url && !BLOCKED_AVATAR_DOMAINS.some((d) => profile.avatar_url.includes(d))) {
         const url = profile.avatar_url;
@@ -756,6 +760,7 @@ function PlayerPageContent() {
         setAvatarLoaded(false);
         setUserAvatar(null);
         setUserAvatarStyle(null);
+        setDisplayName(null);
       }
     });
     return () => subscription.unsubscribe();
@@ -2484,25 +2489,30 @@ function PlayerPageContent() {
                 </button>
               </div>
             )}
-            {userLoading || !avatarLoaded ? null : userAvatar ? (
-              <div className="w-20 h-20 rounded-full overflow-hidden shrink-0 -translate-x-[15%] translate-y-[10%]">
-                <img
-                  src={userAvatar}
-                  alt="Logo da empresa"
-                  className="w-full h-full object-cover select-none"
-                  style={{
-                    transform: userAvatarStyle
-                      ? `translate(${userAvatarStyle.x}px, ${userAvatarStyle.y}px) scale(${userAvatarStyle.zoom})`
-                      : "scale(1.1)",
-                    transition: "transform 0.3s ease",
-                  }}
-                />
+            {userLoading || !avatarLoaded ? null : (userAvatar || displayName) ? (
+              <div className="flex flex-col items-center shrink-0 -translate-x-[15%] translate-y-[10%]">
+                {userAvatar && (
+                  <div className="w-20 h-20 rounded-full overflow-hidden">
+                    <img
+                      src={userAvatar}
+                      alt="Logo da empresa"
+                      className="w-full h-full object-cover select-none"
+                      style={{
+                        transform: userAvatarStyle
+                          ? `translate(${userAvatarStyle.x}px, ${userAvatarStyle.y}px) scale(${userAvatarStyle.zoom})`
+                          : "scale(1.1)",
+                        transition: "transform 0.3s ease",
+                      }}
+                    />
+                  </div>
+                )}
+                {displayName && (
+                  <span className={`text-xs text-white text-center max-w-[96px] truncate ${userAvatar ? "mt-1" : ""}`}>
+                    {displayName}
+                  </span>
+                )}
               </div>
-            ) : (!isAdmin && !isAdminLoading && (
-              <span className="text-xs text-primary bg-primary/10 px-3 py-1 rounded-full font-medium whitespace-nowrap">
-                🎁 Acesso Grátis
-              </span>
-            ))}
+            ) : null}
           </div>
         </header>
 
