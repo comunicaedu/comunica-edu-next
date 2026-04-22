@@ -28,6 +28,7 @@ import {
   Table, TableHeader, TableBody, TableHead, TableRow, TableCell,
 } from "@/components/ui/table";
 import { authedFetch } from "@/lib/authedFetch";
+import { useSessionStore } from "@/stores/sessionStore";
 
 interface ClientProfile {
   id: string;
@@ -332,14 +333,18 @@ const ClientManagement = () => {
   const { toast } = useToast();
 
   useEffect(() => {
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (!session?.user) return;
+    (async () => {
+      const storeState = useSessionStore.getState();
+      if (!storeState.hydrated) storeState.hydrateFromSessionStorage();
+      const storeUser = useSessionStore.getState().user;
+      const token = useSessionStore.getState().token;
+      if (!storeUser?.id || !token) return;
       // Durante impersonação não executa lógica de avatar — preserva identidade do admin
-      if (localStorage.getItem("edu-admin-return-session")) return;
+      if (sessionStorage.getItem("edu-admin-return-session")) return;
 
-      const adminId = session.user.id;
+      const adminId = storeUser.id;
       setCurrentUserId(adminId);
-      setCurrentUserEmail(session.user.email ?? null);
+      setCurrentUserEmail(storeUser.email ?? null);
 
       const STORAGE_PATH = "/storage/v1/object/public/avatars/";
 
@@ -375,7 +380,7 @@ const ClientManagement = () => {
       const { data: prof } = await supabase
         .from("profiles")
         .select("username")
-        .eq("user_id", session.user.id)
+        .eq("user_id", adminId)
         .maybeSingle();
       const usernameResult = prof?.username || localUsername || null;
 
@@ -386,28 +391,22 @@ const ClientManagement = () => {
 
       // Garante que o auth email está no formato username@comunicaedu.app
       const expectedEmail = usernameResult ? `${usernameResult}@comunicaedu.app` : null;
-      if (expectedEmail && session.user.email !== expectedEmail) {
+      if (expectedEmail && storeUser.email !== expectedEmail) {
         authedFetch("/api/auth/link-username", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: usernameResult, accessToken: session.access_token }),
+          body: JSON.stringify({ username: usernameResult }),
         });
       }
-    });
+    })();
   }, []);
 
   const fetchClients = useCallback(async (scrollToUserId?: string) => {
     setLoading(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) { setLoading(false); return; }
-
-      const res = await fetch("/api/admin/list-clients", {
+      const res = await authedFetch("/api/admin/list-clients", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
       const data = await res.json();
@@ -421,7 +420,7 @@ const ClientManagement = () => {
       }
 
       if (data?.clients) {
-        const adminId = session.user.id;
+        const adminId = useSessionStore.getState().user?.id;
         const STORAGE_PATH = "/storage/v1/object/public/avatars/";
         const clientsWithAvatars = (data.clients as ClientProfile[]).map((c) => {
           if (c.user_id === adminId) {
@@ -492,14 +491,9 @@ const ClientManagement = () => {
       enabled: featFlags[f.key] ?? false,
       limit_value: limFlags[f.key] ?? null,
     }));
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.access_token) throw new Error("Sessão expirada");
-    const res = await fetch("/api/admin/save-client-features", {
+    const res = await authedFetch("/api/admin/save-client-features", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${session.access_token}`,
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ userId: targetUserId, features }),
     });
     const data = await res.json();
@@ -611,16 +605,9 @@ const ClientManagement = () => {
   const saveProfile = async (userId: string) => {
     setSavingProfile(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error("Sessão inválida");
-
-      // Usa a rota admin com service role — bypasses RLS
-      const res = await fetch("/api/admin/update-client", {
+      const res = await authedFetch("/api/admin/update-client", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           clientId: userId,
           display_name: editForm.nome || null,
@@ -655,14 +642,9 @@ const ClientManagement = () => {
     setConfirmDeleteId(null);
     setDeletingClient(userId);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error("Sem sessão");
-      const res = await fetch("/api/admin/delete-client", {
+      const res = await authedFetch("/api/admin/delete-client", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ clientId: userId }),
       });
       const data = await res.json();
@@ -699,20 +681,10 @@ const ClientManagement = () => {
     }
 
     if (!isValidUuid(resolvedId)) {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const sessionId = sessionData?.session?.user?.id;
-      if (isValidUuid(sessionId)) {
-        resolvedId = sessionId;
-        setCurrentUserId(sessionId);
-      }
-    }
-
-    if (!isValidUuid(resolvedId)) {
-      const { data: authData } = await supabase.auth.getUser();
-      const freshId = authData?.user?.id;
-      if (isValidUuid(freshId)) {
-        resolvedId = freshId;
-        setCurrentUserId(freshId);
+      const storeId = useSessionStore.getState().user?.id;
+      if (storeId && isValidUuid(storeId)) {
+        resolvedId = storeId;
+        setCurrentUserId(storeId);
       }
     }
 
@@ -726,7 +698,6 @@ const ClientManagement = () => {
 
     setUploadingAvatar(fallbackAvatarKey);
     try {
-      const { data: { session: uploadSession } } = await supabase.auth.getSession();
       const targetId = isValidUuid(resolvedId) ? resolvedId : fallbackAvatarKey;
 
       // Upload via server route using FormData (binary — no base64 size issue)
@@ -734,11 +705,10 @@ const ClientManagement = () => {
       form.append("clientId", targetId);
       form.append("file", file);
 
+      const storeToken = useSessionStore.getState().token;
       const uploadRes = await fetch("/api/admin/upload-client-avatar", {
         method: "POST",
-        headers: uploadSession?.access_token
-          ? { Authorization: `Bearer ${uploadSession.access_token}` }
-          : {},
+        headers: storeToken ? { Authorization: `Bearer ${storeToken}` } : {},
         body: form,
       });
 
@@ -898,15 +868,11 @@ const ClientManagement = () => {
     localStorage.setItem("edu-username", uname);
     setEditingOwnerUsername(false);
 
-    // Vincula o username ao auth via API admin (sem confirmação de email)
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.access_token) {
-        authedFetch("/api/auth/link-username", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: uname, accessToken: session.access_token }),
-        });
-      }
+    // Vincula o username ao auth via API admin
+    authedFetch("/api/auth/link-username", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: uname }),
     });
   };
 
@@ -1375,15 +1341,9 @@ const ClientManagement = () => {
 
     setSavingClientField(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-
-      const res = await fetch("/api/admin/update-client", {
+      const res = await authedFetch("/api/admin/update-client", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           clientId: userId,
           ...(field === "password" ? { password: value } : { username: value }),
@@ -1407,55 +1367,48 @@ const ClientManagement = () => {
   };
   // ────────────────────────────────────────────────────────────────────────
 
-  // ── Entrar no perfil do cliente (impersonação) ──────────────────────────
+  // ── Entrar no perfil do cliente (impersonação via JWT próprio) ──────────
   const enterProfile = async (clientId: string) => {
     setEnteringProfile(clientId);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
+      const adminToken = useSessionStore.getState().token;
+      const adminUser = useSessionStore.getState().user;
+      if (!adminToken || !adminUser?.id) {
+        toast({ title: "Sessão do admin não encontrada. Faça login novamente.", variant: "destructive" });
+        return;
+      }
 
-      // Salva sessão do admin para poder voltar depois
-      localStorage.setItem("edu-admin-return-session", JSON.stringify({
-        access_token: session.access_token,
-        refresh_token: session.refresh_token,
+      // Guarda sessão do admin na aba atual (sessionStorage = isolado por aba)
+      sessionStorage.setItem("edu-admin-return-session", JSON.stringify({
+        token: adminToken,
+        user: adminUser,
       }));
 
-
-      const res = await fetch("/api/admin/impersonate", {
+      const res = await authedFetch("/api/admin/impersonate", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({ clientId }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: clientId }),
       });
-      const data = await res.json();
 
       if (!res.ok) {
-        localStorage.removeItem("edu-admin-return-session");
-        toast({ title: "Erro ao acessar perfil", description: data.error, variant: "destructive" });
+        sessionStorage.removeItem("edu-admin-return-session");
+        const err = await res.json().catch(() => ({}));
+        toast({ title: "Erro ao acessar perfil", description: err?.error ?? "Falha", variant: "destructive" });
         return;
       }
 
-      // Faz login como o cliente usando o token gerado
-      const { error: otpError } = await supabase.auth.verifyOtp({
-        token_hash: data.hashedToken,
-        type: "magiclink",
-      });
+      const { token, user } = await res.json();
 
-      if (otpError) {
-        localStorage.removeItem("edu-admin-return-session");
-        toast({ title: "Erro de autenticação", description: otpError.message, variant: "destructive" });
-        return;
-      }
+      // Troca a sessão ativa pela do cliente
+      useSessionStore.getState().setSession(token, user);
 
-      // Salva o username do cliente para exibir no banner
-      localStorage.setItem("edu-impersonated-username", data.username);
+      // Marca visual de impersonation (isolada por aba)
+      sessionStorage.setItem("edu-impersonated-username", user?.username ?? "");
 
-      // Hard navigation — garante que a nova sessão seja lida corretamente
+      // Hard navigation para reconstruir a UI limpa
       window.location.href = "/player";
     } catch (e) {
-      localStorage.removeItem("edu-admin-return-session");
+      sessionStorage.removeItem("edu-admin-return-session");
       console.error(e);
     }
     setEnteringProfile(null);

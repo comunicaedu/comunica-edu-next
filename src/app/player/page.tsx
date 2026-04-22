@@ -50,6 +50,7 @@ import VoiceRecorderModal, { type InsertMode } from "@/components/player/VoiceRe
 import { useKeyboardPlayer } from "@/hooks/useKeyboardPlayer";
 import { usePlayerBroadcaster, type RemoteCommand } from "@/hooks/usePlayerBroadcast";
 import { authedFetch } from "@/lib/authedFetch";
+import { useSessionStore } from "@/stores/sessionStore";
 // ThemePreviewPopover removed – avatar click now shows zoom effect
 
 import { Slider } from "@/components/ui/slider";
@@ -180,13 +181,13 @@ function PlayerPageContent() {
     // Sincroniza logo do localStorage → avatar_url no perfil (signup público)
     // NÃO executa durante impersonação — evita gravar o logo do admin no perfil do cliente
     const pendingLogo = localStorage.getItem("user-logo");
-    const isImpersonating = !!localStorage.getItem("edu-admin-return-session");
+    const isImpersonating = !!sessionStorage.getItem("edu-admin-return-session");
     if (pendingLogo && !isImpersonating) {
-      supabase.auth.getUser().then(({ data: { user } }) => {
-        if (!user) return;
-        supabase.from("profiles").select("avatar_url").eq("user_id", user.id).single().then(({ data: profile }) => {
+      const storeUser = useSessionStore.getState().user;
+      if (storeUser?.id) {
+        supabase.from("profiles").select("avatar_url").eq("user_id", storeUser.id).single().then(({ data: profile }) => {
           if (!profile?.avatar_url) {
-            supabase.from("profiles").upsert({ user_id: user.id, avatar_url: pendingLogo }, { onConflict: "user_id" }).then(() => {
+            supabase.from("profiles").upsert({ user_id: storeUser.id, avatar_url: pendingLogo }, { onConflict: "user_id" }).then(() => {
               // Limpa localStorage após sincronizar com o banco
               localStorage.removeItem("user-logo");
             });
@@ -195,18 +196,19 @@ function PlayerPageContent() {
             localStorage.removeItem("user-logo");
           }
         });
-      });
+      }
     }
     // Carrega spot settings + configs + lista de spots ao montar
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (!session?.access_token) return;
-      const token = session.access_token;
-      const [, configs] = await Promise.all([
+    const sessionToken = useSessionStore.getState().token;
+    if (sessionToken) {
+      const token = sessionToken;
+      Promise.all([
         loadSpotSettings(token),
         fetchSpotConfigs(token),
         fetchUserSpots(token),
-      ]);
-      if (configs) setCachedSpotConfigs(configs);
+      ]).then(([, configs]) => {
+        if (configs) setCachedSpotConfigs(configs);
+      });
 
       // Baixa notícias EBC silenciosamente em background se há categorias selecionadas
       const cats = prefs.boletins_categories ?? [];
@@ -217,7 +219,7 @@ function PlayerPageContent() {
           body: JSON.stringify({ categories: cats }),
         }).catch(() => {});
       }
-    });
+    }
 
     // Sincroniza playlists do YouTube e curadoria Gemini 1× por semana
     const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -287,7 +289,7 @@ function PlayerPageContent() {
   const [userLogo] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
     // Se está em impersonação ou logado como cliente, não carrega o logo do localStorage
-    if (localStorage.getItem("edu-admin-return-session")) return null;
+    if (sessionStorage.getItem("edu-admin-return-session")) return null;
     return localStorage.getItem("user-logo");
   });
 
@@ -296,8 +298,8 @@ function PlayerPageContent() {
   const [impersonatedUsername, setImpersonatedUsername] = useState<string | null>(null);
 
   useEffect(() => {
-    const returnSession = localStorage.getItem("edu-admin-return-session");
-    const username = localStorage.getItem("edu-impersonated-username");
+    const returnSession = sessionStorage.getItem("edu-admin-return-session");
+    const username = sessionStorage.getItem("edu-impersonated-username");
     if (returnSession) {
       setIsImpersonating(true);
       setImpersonatedUsername(username);
@@ -305,23 +307,28 @@ function PlayerPageContent() {
   }, []);
 
   const exitProfile = async () => {
-    const raw = localStorage.getItem("edu-admin-return-session");
-    if (!raw) return;
+    const raw = sessionStorage.getItem("edu-admin-return-session");
+    if (!raw) {
+      router.replace("/login");
+      return;
+    }
     try {
-      const { access_token, refresh_token } = JSON.parse(raw);
-      const { data, error } = await supabase.auth.setSession({ access_token, refresh_token });
-      if (error || !data.session) {
-        throw new Error(error?.message || "Falha ao restaurar sessão do admin");
+      const parsed = JSON.parse(raw) as { token?: string; user?: { id: string; email: string; role: "admin" | "client"; username?: string } };
+      if (!parsed?.token || !parsed?.user?.id) {
+        sessionStorage.removeItem("edu-admin-return-session");
+        sessionStorage.removeItem("edu-impersonated-username");
+        router.replace("/login");
+        return;
       }
-      localStorage.removeItem("edu-admin-return-session");
-      localStorage.removeItem("edu-impersonated-username");
+      // Restaura sessão do admin no store
+      useSessionStore.getState().setSession(parsed.token, parsed.user);
+      sessionStorage.removeItem("edu-admin-return-session");
+      sessionStorage.removeItem("edu-impersonated-username");
       window.location.href = "/player?section=admin&tab=clientes";
     } catch {
-      // Fallback: desloga completamente e vai para o login
-      await supabase.auth.signOut();
-      localStorage.removeItem("edu-admin-return-session");
-      localStorage.removeItem("edu-impersonated-username");
-      window.location.href = "/login";
+      sessionStorage.removeItem("edu-admin-return-session");
+      sessionStorage.removeItem("edu-impersonated-username");
+      router.replace("/login");
     }
   };
   // ─────────────────────────────────────────────────────────────────────
@@ -367,7 +374,7 @@ function PlayerPageContent() {
   const { resetTheme } = useTheme();
   const { isSectionLocked, isSectionVisible, features, isFeatureLocked } = useClientFeatures();
   const { isAdmin, loading: isAdminLoading } = useIsAdmin();
-  const { isLoading: userLoading } = useCurrentUser();
+  const { isLoading: userLoading, userId: currentUserId_auth, isAdmin: currentIsAdmin } = useCurrentUser();
   const audioRef = useRef<HTMLAudioElement>(null);
   const lastGoNextTimeRef = useRef<number>(0);
   const queueRef = useRef<{ queue: Song[]; queueIndex: number; activePlaylistId: string | null }>({ queue: [], queueIndex: 0, activePlaylistId: null });
@@ -615,7 +622,7 @@ function PlayerPageContent() {
     // Atualiza cache do servidor apenas quando NÃO está em impersonação
     // (o cache serve para a tela do ouvinte sem login — deve refletir o avatar do admin)
     if (!persist) return;
-    const isImpersonating = !!localStorage.getItem("edu-admin-return-session");
+    const isImpersonating = !!sessionStorage.getItem("edu-admin-return-session");
     if (!isImpersonating) {
       authedFetch("/api/owner-avatar", {
         method: "POST",
@@ -633,12 +640,10 @@ function PlayerPageContent() {
     });
   }, []);
 
-  // ── Load user avatar — lógica simples: busca direto do banco pelo ID do usuário logado ──
+  // ── Load user avatar — usa userId do useCurrentUser (sessionStore) ──
   const loadAvatar = useCallback(async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-
-      if (!user) {
+      if (!currentUserId_auth) {
         // Sem sessão (tela do ouvinte): busca avatar via cache do servidor
         setDisplayName(null);
         try {
@@ -651,18 +656,18 @@ function PlayerPageContent() {
         return;
       }
 
-      setBroadcastUserId(user.id);
+      setBroadcastUserId(currentUserId_auth);
 
-      // Carrega estilo do avatar — será aplicado pelo useEffect de sync de prefs
-      if (prefs.avatar_styles?.[user.id]) {
-        setUserAvatarStyle(prefs.avatar_styles[user.id] as unknown as AvatarCoverStyle);
+      // Carrega estilo do avatar
+      if (prefs.avatar_styles?.[currentUserId_auth]) {
+        setUserAvatarStyle(prefs.avatar_styles[currentUserId_auth] as unknown as AvatarCoverStyle);
       }
 
-      // Busca avatar direto do banco pelo ID do usuário logado
+      // Busca avatar direto do banco pelo userId da aba atual
       const { data: profile } = await supabase
         .from("profiles")
         .select("avatar_url, display_name")
-        .eq("user_id", user.id)
+        .eq("user_id", currentUserId_auth)
         .single();
 
       setDisplayName(profile?.display_name ?? null);
@@ -670,23 +675,15 @@ function PlayerPageContent() {
       if (profile?.avatar_url && !BLOCKED_AVATAR_DOMAINS.some((d) => profile.avatar_url.includes(d))) {
         const url = profile.avatar_url;
         const isStorageUrl = url.includes("/avatars/");
-        const belongsToUser = !isStorageUrl || url.includes(user.id);
+        const belongsToUser = !isStorageUrl || url.includes(currentUserId_auth);
         const isDataUrl = url.startsWith("data:");
 
-        const { data: roleRow } = await supabase
-          .from("user_roles")
-          .select("role")
-          .eq("user_id", user.id)
-          .eq("role", "admin")
-          .maybeSingle();
-        const userIsAdmin = !!roleRow;
-
-        if (isDataUrl && !userIsAdmin) {
+        if (isDataUrl && !currentIsAdmin) {
           setUserAvatar(null);
-          supabase.from("profiles").update({ avatar_url: null }).eq("user_id", user.id);
+          supabase.from("profiles").update({ avatar_url: null }).eq("user_id", currentUserId_auth);
         } else if (isStorageUrl && !belongsToUser) {
           setUserAvatar(null);
-          supabase.from("profiles").update({ avatar_url: null }).eq("user_id", user.id);
+          supabase.from("profiles").update({ avatar_url: null }).eq("user_id", currentUserId_auth);
         } else {
           setUserAvatar(url);
         }
@@ -696,15 +693,14 @@ function PlayerPageContent() {
     } finally {
       setAvatarLoaded(true);
     }
-  }, []);
+  }, [currentUserId_auth, currentIsAdmin]);
 
   // Atualiza last_seen quando o player abre
   useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (user) {
-        supabase.from("profiles").update({ last_seen: new Date().toISOString() }).eq("user_id", user.id);
-      }
-    });
+    const storeUser = useSessionStore.getState().user;
+    if (storeUser?.id) {
+      supabase.from("profiles").update({ last_seen: new Date().toISOString() }).eq("user_id", storeUser.id);
+    }
   }, []);
 
   useEffect(() => {
@@ -719,7 +715,7 @@ function PlayerPageContent() {
       if (avatarUrl) {
         applyFreshAvatar(avatarUrl, userId);
         // Nunca sincroniza com o banco durante impersonação — preserva avatar do admin
-        if (!localStorage.getItem("edu-admin-return-session")) {
+        if (!sessionStorage.getItem("edu-admin-return-session")) {
           syncAvatarToCloud(avatarUrl, userId);
         }
       }

@@ -86,6 +86,8 @@ export default function LoginPage() {
       await supabase.auth.signOut();
       localStorage.removeItem("edu-admin-return-session");
       localStorage.removeItem("edu-impersonated-username");
+      sessionStorage.removeItem("edu-admin-return-session");
+      sessionStorage.removeItem("edu-impersonated-username");
       localStorage.removeItem("edu-username");
 
       // Caches POR_USUARIO — limpar ao trocar de usuário
