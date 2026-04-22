@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/popover";
 import { Slider } from "@/components/ui/slider";
 import { supabase } from "@/lib/supabase/client";
+import { useSessionStore } from "@/stores/sessionStore";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -256,7 +257,7 @@ const PlaylistScheduleDialog = ({ playlistId, playlistName, open, onOpenChange, 
     }
 
     setSaving(true);
-    const { data: userData } = await supabase.auth.getUser();
+    const storeUser = useSessionStore.getState().user;
 
     // Generate days_of_week covering all days (0-6) since scheduling is now date-range based
     const allDays = [0, 1, 2, 3, 4, 5, 6];
@@ -281,7 +282,7 @@ const PlaylistScheduleDialog = ({ playlistId, playlistName, open, onOpenChange, 
         .update(payload)
         .eq("id", schedule.id));
     } else {
-      const userId = userData.user?.id;
+      const userId = storeUser?.id;
       ({ error } = await supabase
         .from("playlist_schedules")
         .insert([{

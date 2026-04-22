@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { supabase } from "@/lib/supabase/client";
+import { useSessionStore } from "@/stores/sessionStore";
 import { toast } from "sonner";
 import { generateEduCover } from "@/lib/generateEduCover";
 import { authedFetch } from "@/lib/authedFetch";
@@ -631,8 +632,8 @@ const CreatePlaylistModal = ({ open, onOpenChange }: CreatePlaylistModalProps) =
 
     setSaving(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      const userId = user?.id || null;
+      const storeUser = useSessionStore.getState().user;
+      const userId = storeUser?.id || null;
 
       // Create playlist (auto-retries on duplicate name)
       const playlist = await insertPlaylist(name.trim(), userId);

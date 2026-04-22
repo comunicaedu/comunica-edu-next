@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { authedFetch } from "@/lib/authedFetch";
+import { useSessionStore } from "@/stores/sessionStore";
 interface Song {
   id: string;
   title: string;
@@ -262,11 +263,8 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
 
   // Popula o ID do usuário logado
   useEffect(() => {
-    import("@/lib/supabase/client").then(({ supabase }) => {
-      supabase.auth.getUser().then(({ data }) => {
-        if (data.user) setCurrentUserId(data.user.id);
-      });
-    });
+    const storeUser = useSessionStore.getState().user;
+    if (storeUser?.id) setCurrentUserId(storeUser.id);
   }, []);
 
   // Sync prefs into local state when loaded
@@ -504,8 +502,8 @@ const PlaylistSection = ({ currentSong, isPlaying, onPlay, onPause, onPlayImport
         // Aplicar agendamento pendente se definido antes da importação
         if (pendingScheduleData) {
           try {
-            const { data: userData } = await (await import("@/lib/supabase/client")).supabase.auth.getUser();
-            const userId = userData.user?.id ?? "00000000-0000-0000-0000-000000000000";
+            const pendingUser = useSessionStore.getState().user;
+            const userId = pendingUser?.id ?? "00000000-0000-0000-0000-000000000000";
             const { format } = await import("date-fns");
             const schedulePayload: Record<string, any> = {
               playlist_id: data.playlist_id,

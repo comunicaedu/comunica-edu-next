@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useServicePlans } from "@/hooks/useServicePlans";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/lib/supabase/client";
+import { useSessionStore } from "@/stores/sessionStore";
 import { isValidCNPJ } from "@/lib/cpfCnpjValidation";
 import { ALL_CLIENT_FEATURES } from "@/hooks/useClientFeatures";
 import { convertToPng } from "@/lib/logoUtils";
@@ -188,14 +189,16 @@ const ManualClientForm = ({ onSuccess }: { onSuccess?: (userId: string) => void 
 
     try {
       // 1. Create auth user via admin API (MUST be first — we need the userId)
-      const { data: { session } } = await supabase.auth.getSession();
+      const storeToken = useSessionStore.getState().token;
       const res = await fetch("/api/auth/create-client", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(storeToken ? { Authorization: `Bearer ${storeToken}` } : {}),
+        },
         body: JSON.stringify({
           username: usuario.trim().toLowerCase(),
           password: senha,
-          accessToken: session?.access_token,
           profile: {
             nome: nome.trim() || null,
             telefone: telefone || null,
@@ -245,14 +248,12 @@ const ManualClientForm = ({ onSuccess }: { onSuccess?: (userId: string) => void 
         limit_value: null,
       }));
 
-      const { data: { session: featSession } } = await supabase.auth.getSession();
+      const featToken = useSessionStore.getState().token;
       await fetch("/api/admin/save-client-features", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(featSession?.access_token
-            ? { Authorization: `Bearer ${featSession.access_token}` }
-            : {}),
+          ...(featToken ? { Authorization: `Bearer ${featToken}` } : {}),
         },
         body: JSON.stringify({
           userId,
@@ -268,7 +269,7 @@ const ManualClientForm = ({ onSuccess }: { onSuccess?: (userId: string) => void 
           const logoBlob = await logoRes.blob();
           const logoFile = new File([logoBlob], "avatar.png", { type: logoBlob.type || "image/png" });
 
-          const { data: { session: uploadSession } } = await supabase.auth.getSession();
+          const uploadToken = useSessionStore.getState().token;
 
           const form = new FormData();
           form.append("clientId", userId);
@@ -276,9 +277,7 @@ const ManualClientForm = ({ onSuccess }: { onSuccess?: (userId: string) => void 
 
           await fetch("/api/admin/upload-client-avatar", {
             method: "POST",
-            headers: uploadSession?.access_token
-              ? { Authorization: `Bearer ${uploadSession.access_token}` }
-              : {},
+            headers: uploadToken ? { Authorization: `Bearer ${uploadToken}` } : {},
             body: form,
           });
         } catch {

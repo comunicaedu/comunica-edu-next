@@ -22,6 +22,7 @@ import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Checkbox } from "@/components/ui/checkbox";
 import { supabase } from "@/lib/supabase/client";
+import { useSessionStore } from "@/stores/sessionStore";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -304,8 +305,8 @@ const GroupScheduleDialog = ({ playlists, open, onOpenChange, onSaved }: Props) 
     setSaving(true);
 
     try {
-      const { data: userData } = await supabase.auth.getUser();
-      const userId = userData.user?.id ?? ANONYMOUS_SCHEDULE_USER_ID;
+      const storeUser = useSessionStore.getState().user;
+      const userId = storeUser?.id ?? ANONYMOUS_SCHEDULE_USER_ID;
       const allDays = [0, 1, 2, 3, 4, 5, 6];
 
       const playlistIds = selectedEntries.map((entry) => entry.playlist.id);

@@ -5,6 +5,7 @@ import { Radio, Play, Pause, Download, Loader2, Mic, Square, Music, SkipForward,
 import { Slider } from "@/components/ui/slider";
 import { toast } from "sonner";
 import { authedFetch } from "@/lib/authedFetch";
+import { useSessionStore } from "@/stores/sessionStore";
 import type { InsertMode } from "@/components/player/VoiceRecorderModal";
 
 const VOICES = [
@@ -104,15 +105,13 @@ const CompactLocutorVirtual = ({ open, onClose, onInsert, onPreviewStart, isLock
   useEffect(() => {
     if (!open) return;
     authedFetch("/api/instrumental-defaults").then(r => r.json()).then(({ tracks }) => { if (tracks) setDefaultTracks(tracks); }).catch(() => {});
-    import("@/lib/supabase/client").then(async ({ supabase }) => {
-      let { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) { const { data: r } = await supabase.auth.refreshSession(); session = r.session; }
-      if (!session?.access_token) return;
-      fetch("/api/client-instrumentals", { headers: { Authorization: `Bearer ${session.access_token}` } })
+    const token = useSessionStore.getState().token;
+    if (token) {
+      fetch("/api/client-instrumentals", { headers: { Authorization: `Bearer ${token}` } })
         .then(r => r.json()).then(({ tracks }) => {
           if (tracks) { const c: Record<string, TrackSlot> = {}; for (const [cat, d] of Object.entries(tracks) as [string, { url: string }][]) { c[cat] = { name: cat, url: d.url }; } setCustomTracks(c); }
         }).catch(() => {});
-    });
+    }
   }, [open]);
 
   // Close on outside click
@@ -264,11 +263,9 @@ const CompactLocutorVirtual = ({ open, onClose, onInsert, onPreviewStart, isLock
     input.onchange = async () => {
       const file = input.files?.[0]; if (!file) return;
       try {
-        const { supabase } = await import("@/lib/supabase/client");
-        let { data: { session } } = await supabase.auth.getSession();
-        if (!session?.access_token) { const { data: r } = await supabase.auth.refreshSession(); session = r.session; }
-        if (!session?.access_token) { toast.error("Sessão expirada."); return; }
-        const fd = new FormData(); fd.append("file", file); fd.append("category", cat); fd.append("accessToken", session.access_token);
+        const token = useSessionStore.getState().token;
+        if (!token) { toast.error("Sessão expirada."); return; }
+        const fd = new FormData(); fd.append("file", file); fd.append("category", cat); fd.append("accessToken", token);
         const res = await authedFetch("/api/client-instrumentals", { method: "POST", body: fd });
         if (!res.ok) { toast.error("Erro ao salvar."); return; }
         const { url } = await res.json();
@@ -371,8 +368,8 @@ const CompactLocutorVirtual = ({ open, onClose, onInsert, onPreviewStart, isLock
                   <div className="ml-auto flex shrink-0 gap-px">
                     {hasCust && (
                       <button type="button" onClick={async e => { e.stopPropagation();
-                        try { const { supabase } = await import("@/lib/supabase/client"); let { data: { session } } = await supabase.auth.getSession(); if (!session?.access_token) { const { data: r } = await supabase.auth.refreshSession(); session = r.session; }
-                          if (session?.access_token) await authedFetch("/api/client-instrumentals", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ category: cat.id, accessToken: session.access_token }) });
+                        try { const token = useSessionStore.getState().token;
+                          if (token) await authedFetch("/api/client-instrumentals", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ category: cat.id, accessToken: token }) });
                         } catch {} setCustomTracks(prev => { const n = { ...prev }; delete n[cat.id]; return n; });
                       }} className="opacity-40 hover:opacity-90" title="Voltar ao padrão"><RotateCcw className="h-2 w-2" /></button>
                     )}

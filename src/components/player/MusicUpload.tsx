@@ -13,6 +13,7 @@ import { useClientFeatures } from "@/hooks/useClientFeatures";
 import { useActivityTracker } from "@/hooks/useActivityTracker";
 import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { supabase } from "@/lib/supabase/client";
+import { useSessionStore } from "@/stores/sessionStore";
 import PlaylistScheduleDialog from "./PlaylistScheduleDialog";
 import { authedFetch } from "@/lib/authedFetch";
 
@@ -110,9 +111,8 @@ const MusicUpload = ({ onUploadComplete }: MusicUploadProps) => {
   useEffect(() => {
     loadGenres();
     loadPlaylists();
-    supabase.auth.getUser().then(({ data }) => {
-      if (data.user) setCurrentUserId(data.user.id);
-    });
+    const storeUser = useSessionStore.getState().user;
+    if (storeUser?.id) setCurrentUserId(storeUser.id);
   }, []);
 
   const loadGenres = async () => {

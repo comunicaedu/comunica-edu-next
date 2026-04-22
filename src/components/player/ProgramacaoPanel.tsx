@@ -19,6 +19,7 @@ import {
   User,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
+import { useSessionStore } from "@/stores/sessionStore";
 import { Switch } from "@/components/ui/switch";
 import { ALL_CLIENT_FEATURES } from "@/hooks/useClientFeatures";
 import { Button } from "@/components/ui/button";
@@ -157,36 +158,35 @@ const ProgramacaoPanel = () => {
     let channel: ReturnType<typeof supabase.channel> | null = null;
     let cancelled = false;
 
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (!user || cancelled) return;
-      setClientUserId(user.id);
+    const user = useSessionStore.getState().user;
+    if (!user?.id) return;
+    setClientUserId(user.id);
 
-      const loadFeatures = () => {
-        if (cancelled) return;
-        supabase.from("client_features").select("feature_key, enabled, limit_value").eq("user_id", user.id)
-          .then(({ data }) => {
-            if (cancelled) return;
-            const map: Record<string, { enabled: boolean; limit_value: number | null }> = {};
-            ALL_CLIENT_FEATURES.forEach(f => { map[f.key] = { enabled: false, limit_value: 0 }; });
-            if (data) {
-              data.forEach((f: any) => { map[f.feature_key] = { enabled: f.enabled, limit_value: f.limit_value ?? 0 }; });
-            }
-            setClientFeatures(map);
-          });
-      };
+    const loadFeatures = () => {
+      if (cancelled) return;
+      supabase.from("client_features").select("feature_key, enabled, limit_value").eq("user_id", user.id)
+        .then(({ data }) => {
+          if (cancelled) return;
+          const map: Record<string, { enabled: boolean; limit_value: number | null }> = {};
+          ALL_CLIENT_FEATURES.forEach(f => { map[f.key] = { enabled: false, limit_value: 0 }; });
+          if (data) {
+            data.forEach((f: any) => { map[f.feature_key] = { enabled: f.enabled, limit_value: f.limit_value ?? 0 }; });
+          }
+          setClientFeatures(map);
+        });
+    };
 
-      loadFeatures();
+    loadFeatures();
 
-      // Nome único por instância evita reutilização interna do Supabase (problema no StrictMode)
-      channel = supabase.channel(`client_features:${user.id}:${Math.random()}`)
-        .on("postgres_changes", {
-          event: "*",
-          schema: "public",
-          table: "client_features",
-          filter: `user_id=eq.${user.id}`,
-        }, () => { loadFeatures(); })
-        .subscribe();
-    });
+    // Nome único por instância evita reutilização interna do Supabase (problema no StrictMode)
+    channel = supabase.channel(`client_features:${user.id}:${Math.random()}`)
+      .on("postgres_changes", {
+        event: "*",
+        schema: "public",
+        table: "client_features",
+        filter: `user_id=eq.${user.id}`,
+      }, () => { loadFeatures(); })
+      .subscribe();
 
     return () => {
       cancelled = true;
@@ -221,8 +221,8 @@ const ProgramacaoPanel = () => {
   }, []);
 
   const fetchData = useCallback(async () => {
-    const { data: userData } = await supabase.auth.getUser();
-    const uid = userData.user?.id ?? null;
+    const storeUser = useSessionStore.getState().user;
+    const uid = storeUser?.id ?? null;
     setCurrentUserId(uid);
 
     // Verifica se é admin

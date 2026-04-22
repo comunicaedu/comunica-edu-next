@@ -7,6 +7,7 @@ import { Slider } from "@/components/ui/slider";
 import { toast } from "sonner";
 import { getSupportedAudioMimeType } from "@/lib/mediaRecorderUtils";
 import { useClientFeatures } from "@/hooks/useClientFeatures";
+import { useSessionStore } from "@/stores/sessionStore";
 
 export type InsertMode = "queue" | "interrupt" | "scheduled";
 
@@ -162,13 +163,8 @@ export default function VoiceRecorderModal({
     if (!blobUrl || !recordedBlobRef.current) return;
     setIsUploading(true);
     try {
-      const { supabase } = await import("@/lib/supabase/client");
-      let { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        const { data: refreshed } = await supabase.auth.refreshSession();
-        session = refreshed.session;
-      }
-      if (!session?.access_token) {
+      const token = useSessionStore.getState().token;
+      if (!token) {
         toast.error("Sessão expirada. Faça login novamente.");
         setIsUploading(false);
         return;
@@ -187,7 +183,7 @@ export default function VoiceRecorderModal({
 
       const res = await fetch("/api/voice-recordings", {
         method: "POST",
-        headers: { Authorization: `Bearer ${session.access_token}` },
+        headers: { Authorization: `Bearer ${token}` },
         body: fd,
       });
       if (!res.ok) {

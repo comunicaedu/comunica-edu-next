@@ -11,6 +11,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import { supabase } from "@/lib/supabase/client";
+import { useSessionStore } from "@/stores/sessionStore";
 import { toast } from "sonner";
 import { useClientFeatures } from "@/hooks/useClientFeatures";
 import { useUserPreferences } from "@/hooks/useUserPreferences";
@@ -518,23 +519,23 @@ const SpotsPanel = ({ userId: propUserId, isAdmin = false, isLocked = false, isU
   // ── Init — carrega token, spots, configs e settings do banco ──────────────
 
   useEffect(() => {
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      const token = session?.access_token ?? null;
-      const uid = session?.user?.id ?? null;
-      tokenRef.current = token;
-      if (uid) userIdRef.current = uid;
+    const storeToken = useSessionStore.getState().token;
+    const storeUser = useSessionStore.getState().user;
+    const token = storeToken ?? null;
+    const uid = storeUser?.id ?? null;
+    tokenRef.current = token;
+    if (uid) userIdRef.current = uid;
 
-      if (!token) { setLoading(false); return; }
+    if (!token) { setLoading(false); return; }
 
-      // Carrega tudo em paralelo do banco
-      const [fetchedSettings, fetchedConfigs] = await Promise.all([
-        loadSpotSettings(token),
-        fetchSpotConfigs(token),
-      ]);
+    // Carrega tudo em paralelo do banco
+    Promise.all([
+      loadSpotSettings(token),
+      fetchSpotConfigs(token),
+    ]).then(([fetchedSettings, fetchedConfigs]) => {
       setSettings(fetchedSettings);
       setConfigs(fetchedConfigs);
-
-      await loadSpots(token);
+      return loadSpots(token);
     });
 
     const onCfgChange = () => setConfigs({ ...loadSpotConfigs() });

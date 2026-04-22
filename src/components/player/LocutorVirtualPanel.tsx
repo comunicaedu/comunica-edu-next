@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import type { InsertMode } from "@/components/player/VoiceRecorderModal";
 import { authedFetch } from "@/lib/authedFetch";
+import { useSessionStore } from "@/stores/sessionStore";
 const VOICE_OPTIONS = [
   { id: "masculina-jovem", label: "Zeraías", desc: "Masculina" },
   { id: "feminina-jovem",  label: "Zeruia",  desc: "Feminina"  },
@@ -186,35 +187,33 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
 
   /* Load user */
   useEffect(() => {
-    import("@/lib/supabase/client").then(({ supabase }) => {
-      supabase.auth.getUser().then(async ({ data }) => {
-        if (!data.user) return;
-        setUserId(data.user.id);
+    const storeUser = useSessionStore.getState().user;
+    if (!storeUser?.id) return;
+    setUserId(storeUser.id);
 
-        const { data: profile } = await supabase
-          .from("profiles")
-          .select("display_name, username")
-          .eq("user_id", data.user.id)
-          .single();
+    import("@/lib/supabase/client").then(async ({ supabase }) => {
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("display_name, username")
+        .eq("user_id", storeUser.id)
+        .single();
 
-        const name = profile?.display_name || profile?.username || "usuário";
-        setUserName(name);
+      const name = profile?.display_name || profile?.username || "usuário";
+      setUserName(name);
 
-        const now      = new Date();
-        const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-        const { data: usage } = await supabase
-          .from("locutor_usage")
-          .select("chars_used, generations_used")
-          .eq("user_id", data.user.id)
-          .eq("month_key", monthKey)
-          .single();
+      const now      = new Date();
+      const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      const { data: usage } = await supabase
+        .from("locutor_usage")
+        .select("chars_used, generations_used")
+        .eq("user_id", storeUser.id)
+        .eq("month_key", monthKey)
+        .single();
 
-        if (usage) {
-          setCharsUsed(usage.chars_used ?? 0);
-          setGensUsed(usage.generations_used ?? 0);
-        }
-
-      });
+      if (usage) {
+        setCharsUsed(usage.chars_used ?? 0);
+        setGensUsed(usage.generations_used ?? 0);
+      }
     });
   }, []);
 
@@ -267,29 +266,23 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
   /* Load trilhas customizadas do cliente (do banco de dados) */
   useEffect(() => {
     if (isAdmin) return; // admin não tem trilhas customizadas
-    import("@/lib/supabase/client").then(async ({ supabase }) => {
-      let { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        const { data: refreshed } = await supabase.auth.refreshSession();
-        session = refreshed.session;
-      }
-      if (!session?.access_token) return;
-      fetch("/api/client-instrumentals", {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      })
-        .then(r => r.json())
-        .then(({ tracks }) => {
-          if (tracks) {
-            const custom: Record<string, TrackSlot> = {};
-            for (const [cat, data] of Object.entries(tracks) as [string, { url: string }][]) {
-              const label = TRACK_CATEGORIES.find(c => c.id === cat)?.label ?? cat;
-              custom[cat] = { name: label.toLowerCase(), url: data.url };
-            }
-            setCustomTracks(custom);
+    const token = useSessionStore.getState().token;
+    if (!token) return;
+    fetch("/api/client-instrumentals", {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(r => r.json())
+      .then(({ tracks }) => {
+        if (tracks) {
+          const custom: Record<string, TrackSlot> = {};
+          for (const [cat, data] of Object.entries(tracks) as [string, { url: string }][]) {
+            const label = TRACK_CATEGORIES.find(c => c.id === cat)?.label ?? cat;
+            custom[cat] = { name: label.toLowerCase(), url: data.url };
           }
-        })
-        .catch(() => {});
-    });
+          setCustomTracks(custom);
+        }
+      })
+      .catch(() => {});
   }, [isAdmin]);
 
   /* Silent pre-play to warm up browser audio decoder */
@@ -492,9 +485,8 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
     if (!moodTestText.trim()) { toast.error("Digite o texto antes de salvar."); return; }
     setIsSavingVoice(true);
     try {
-      const { supabase } = await import("@/lib/supabase/client");
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) { toast.error("Sessão expirada."); return; }
+      const token = useSessionStore.getState().token;
+      if (!token) { toast.error("Sessão expirada."); return; }
 
       // Salva o texto de preview específico para esta voz
       const r = await authedFetch("/api/admin/save-setting", {
@@ -503,7 +495,7 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
         body: JSON.stringify({
           key: `locutor_preview_${selectedVoice}`,
           value: moodTestText.trim(),
-          accessToken: session.access_token,
+          accessToken: token,
         }),
       });
       if (!r.ok) throw new Error((await r.json()).error ?? "erro ao salvar");
@@ -665,17 +657,12 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
         setIsUploadingDefault(category);
         const blobUrl = URL.createObjectURL(file);
         try {
-          const { supabase } = await import("@/lib/supabase/client");
-          let { data: { session } } = await supabase.auth.getSession();
-          if (!session?.access_token) {
-            const { data: refreshed } = await supabase.auth.refreshSession();
-            session = refreshed.session;
-          }
-          if (!session?.access_token) { toast.error("Sessão expirada. Faça login novamente."); return; }
+          const token = useSessionStore.getState().token;
+          if (!token) { toast.error("Sessão expirada. Faça login novamente."); return; }
           const fd = new FormData();
           fd.append("file", file);
           fd.append("category", category);
-          fd.append("accessToken", session.access_token);
+          fd.append("accessToken", token);
           const res = await authedFetch("/api/instrumental-defaults", { method: "POST", body: fd });
           if (!res.ok) { toast.error("Erro ao salvar trilha."); URL.revokeObjectURL(blobUrl); return; }
           const { url: signedUrl, name: savedName } = await res.json();
@@ -689,20 +676,14 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
       } else {
         // Cliente: salva no banco de dados via API
         try {
-          const { supabase } = await import("@/lib/supabase/client");
-          let { data: { session } } = await supabase.auth.getSession();
-          // Se sessão expirou, tenta refresh automático
-          if (!session?.access_token) {
-            const { data: refreshed } = await supabase.auth.refreshSession();
-            session = refreshed.session;
-          }
-          if (!session?.access_token) { toast.error("Sessão expirada. Faça login novamente."); return; }
+          const token = useSessionStore.getState().token;
+          if (!token) { toast.error("Sessão expirada. Faça login novamente."); return; }
 
           setIsUploadingDefault(category);
           const fd = new FormData();
           fd.append("file", file);
           fd.append("category", category);
-          fd.append("accessToken", session.access_token);
+          fd.append("accessToken", token);
           const res = await authedFetch("/api/client-instrumentals", { method: "POST", body: fd });
           if (!res.ok) { toast.error("Erro ao salvar trilha."); return; }
           const { url: signedUrl } = await res.json();
@@ -1131,17 +1112,12 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
                                 e.stopPropagation();
                                 // Deleta do banco de dados
                                 try {
-                                  const { supabase } = await import("@/lib/supabase/client");
-                                  let { data: { session } } = await supabase.auth.getSession();
-                                  if (!session?.access_token) {
-                                    const { data: refreshed } = await supabase.auth.refreshSession();
-                                    session = refreshed.session;
-                                  }
-                                  if (session?.access_token) {
+                                  const token = useSessionStore.getState().token;
+                                  if (token) {
                                     await authedFetch("/api/client-instrumentals", {
                                       method: "DELETE",
                                       headers: { "Content-Type": "application/json" },
-                                      body: JSON.stringify({ category: cat.id, accessToken: session.access_token }),
+                                      body: JSON.stringify({ category: cat.id, accessToken: token }),
                                     });
                                   }
                                 } catch { /* silently fall back */ }
