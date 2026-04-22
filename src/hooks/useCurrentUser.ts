@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase/client";
+import { useSessionStore } from "@/stores/sessionStore";
 import type { User } from "@supabase/supabase-js";
 
 export function useCurrentUser(): {
@@ -19,6 +20,22 @@ export function useCurrentUser(): {
 
     const loadUser = async () => {
       try {
+        // Prioridade: JWT próprio do sessionStore (isolado por aba)
+        const sessionStore = useSessionStore.getState();
+        if (!sessionStore.hydrated) {
+          sessionStore.hydrateFromSessionStorage();
+        }
+        const storeUser = useSessionStore.getState().user;
+
+        if (storeUser?.id) {
+          if (!mounted) return;
+          setUser({ id: storeUser.id, email: storeUser.email } as User);
+          setIsAdmin(storeUser.role === "admin");
+          setIsLoading(false);
+          return;
+        }
+
+        // Fallback: Supabase auth
         const { data: { user: u }, error } = await supabase.auth.getUser();
         if (!mounted) return;
 
@@ -70,5 +87,6 @@ export function useCurrentUser(): {
     };
   }, []);
 
-  return { user, userId: user?.id ?? null, isAdmin, isLoading };
+  const storeUserId = useSessionStore(s => s.user?.id);
+  return { user, userId: storeUserId ?? user?.id ?? null, isAdmin, isLoading };
 }
