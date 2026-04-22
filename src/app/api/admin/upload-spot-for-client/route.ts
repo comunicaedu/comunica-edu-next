@@ -1,43 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-
-function adminClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { autoRefreshToken: false, persistSession: false } }
-  );
-}
-
-async function resolveUser(req: NextRequest) {
-  const token = (req.headers.get("authorization") ?? "").replace("Bearer ", "").trim();
-  if (!token) return null;
-  const { data: { user }, error } = await adminClient().auth.getUser(token);
-  if (error || !user) return null;
-  return user;
-}
-
-async function isAdmin(userId: string): Promise<boolean> {
-  const { data } = await adminClient()
-    .from("user_roles")
-    .select("role")
-    .eq("user_id", userId)
-    .eq("role", "admin")
-    .maybeSingle();
-  return !!data;
-}
+import { resolveApiUser } from "@/lib/api-auth";
 
 // POST — admin faz upload de spot e atribui a um cliente específico
 export async function POST(req: NextRequest) {
-  const caller = await resolveUser(req);
-  if (!caller) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-  const admin = adminClient();
-
-  // Verifica se o chamador é admin
-  if (!(await isAdmin(caller.id))) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const ctx = await resolveApiUser(req);
+  if (!ctx) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!ctx.isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const formData = await req.formData();
   const file = formData.get("file") as File | null;
@@ -52,13 +20,13 @@ export async function POST(req: NextRequest) {
 
   const buffer = Buffer.from(await file.arrayBuffer());
 
-  const { error: uploadError } = await admin.storage
+  const { error: uploadError } = await ctx.db.storage
     .from("spots")
     .upload(storagePath, buffer, { contentType: file.type || "audio/mpeg", upsert: false });
 
   if (uploadError) return NextResponse.json({ error: uploadError.message }, { status: 500 });
 
-  const { data, error: dbError } = await admin
+  const { data, error: dbError } = await ctx.db
     .from("spots")
     .insert({
       user_id: targetUserId,
@@ -70,7 +38,7 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (dbError) {
-    await admin.storage.from("spots").remove([storagePath]);
+    await ctx.db.storage.from("spots").remove([storagePath]);
     return NextResponse.json({ error: dbError.message }, { status: 500 });
   }
 

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { resolveApiUser } from "@/lib/api-auth";
 
 /**
  * POST /api/boletins
@@ -33,13 +34,6 @@ function adminClient() {
   );
 }
 
-async function resolveUser(req: NextRequest) {
-  const token = (req.headers.get("authorization") ?? "").replace("Bearer ", "").trim();
-  if (!token) return null;
-  const { data: { user }, error } = await adminClient().auth.getUser(token);
-  if (error || !user) return null;
-  return user;
-}
 
 // Mapeia categoria → URL da página da Radioagência Nacional
 const EBC_CATEGORY_URLS: Record<string, string> = {
@@ -144,8 +138,8 @@ async function fetchEBCCategory(category: string): Promise<EBCItem[]> {
 }
 
 export async function POST(req: NextRequest) {
-  const user = await resolveUser(req);
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const ctx = await resolveApiUser(req);
+  if (!ctx) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { categories } = await req.json() as { categories: string[] };
   if (!categories?.length) {
