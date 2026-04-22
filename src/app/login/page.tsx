@@ -12,6 +12,7 @@ import PlansModal from "@/components/PlansModal";
 import WhatsAppButton from "@/components/WhatsAppButton";
 import { useBackground } from "@/contexts/BackgroundContext";
 import { supabase } from "@/lib/supabase/client";
+import { useSessionStore } from "@/stores/sessionStore";
 import { toast } from "sonner";
 
 function hexToRgba(hex: string, alpha: number): string {
@@ -42,6 +43,7 @@ export default function LoginPage() {
   const [fieldsLocked, setFieldsLocked] = useState(true);
 
   const router = useRouter();
+  const setSession = useSessionStore(s => s.setSession);
 
   // Prevent browser autofill: fields start as readOnly, unlock after mount
   useEffect(() => {
@@ -138,6 +140,26 @@ export default function LoginPage() {
       }
 
       localStorage.setItem("edu-username", uname);
+
+      // Obtém JWT próprio em paralelo (não bloqueia se falhar)
+      try {
+        const jwtRes = await fetch("/api/auth/jwt-login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ usuario: uname, senha }),
+        });
+        if (jwtRes.ok) {
+          const { token, user } = await jwtRes.json();
+          if (token && user?.id) {
+            setSession(token, user);
+          }
+        } else {
+          console.warn("[login] jwt-login falhou, seguindo sem JWT proprio");
+        }
+      } catch (e) {
+        console.warn("[login] erro ao obter JWT proprio:", e);
+      }
+
       router.replace("/player");
     } catch {
       toast.error("Erro ao entrar. Tente novamente.");
