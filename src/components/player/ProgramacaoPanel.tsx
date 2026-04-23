@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase/client";
 import { useSessionStore } from "@/stores/sessionStore";
+import { authedFetch } from "@/lib/authedFetch";
 import { Switch } from "@/components/ui/switch";
 import { ALL_CLIENT_FEATURES } from "@/hooks/useClientFeatures";
 import { Button } from "@/components/ui/button";
@@ -234,24 +235,17 @@ const ProgramacaoPanel = () => {
       setIsAdmin(callerIsAdmin);
     }
 
-    // Queries paralelas
-    let schedulesQuery = supabase.from("playlist_schedules").select("*");
-    let spotConfigsQuery = supabase.from("spot_configs")
-      .select("spot_id, user_id, schedule_start, schedule_end")
-      .not("schedule_start", "is", null);
-
-    // Cliente só vê as suas próprias programações
-    if (!callerIsAdmin && uid) {
-      schedulesQuery = schedulesQuery.eq("user_id", uid);
-      spotConfigsQuery = spotConfigsQuery.eq("user_id", uid);
-    }
-
-    const [playlistsResponse, schedulesResponse, spotsResponse, spotConfigsResponse] = await Promise.all([
+    // Queries paralelas — via API routes (service_role, bypassa RLS)
+    const [playlistsResponse, schedulesRes, spotsRes, spotConfigsRes] = await Promise.all([
       supabase.from("playlists").select("id, name, created_by, cover_url, playlist_songs(count)").order("name", { ascending: true }),
-      schedulesQuery,
-      supabase.from("spots").select("id, title, user_id"),
-      spotConfigsQuery,
+      authedFetch("/api/playlist-schedules").then(r => r.json()),
+      authedFetch("/api/spots").then(r => r.json()),
+      authedFetch("/api/spots/configs").then(r => r.json()),
     ]);
+
+    const schedulesResponse = { data: schedulesRes.schedules ?? [], error: schedulesRes.error ? { message: schedulesRes.error } : null };
+    const spotsResponse = { data: (spotsRes.spots ?? []).map((s: any) => ({ id: s.id, title: s.title, user_id: s.user_id })), error: spotsRes.error ? { message: spotsRes.error } : null };
+    const spotConfigsResponse = { data: (spotConfigsRes.configs ? Object.entries(spotConfigsRes.configs).map(([spot_id, cfg]: [string, any]) => ({ spot_id, ...cfg })).filter((c: any) => c.scheduleStart) : []), error: spotConfigsRes.error ? { message: spotConfigsRes.error } : null };
 
     if (playlistsResponse.error) {
       toast.error("Erro ao carregar playlists.");

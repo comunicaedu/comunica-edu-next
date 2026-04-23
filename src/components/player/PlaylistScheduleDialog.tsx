@@ -23,6 +23,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { supabase } from "@/lib/supabase/client";
 import { useSessionStore } from "@/stores/sessionStore";
+import { authedFetch } from "@/lib/authedFetch";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -165,18 +166,15 @@ const PlaylistScheduleDialog = ({ playlistId, playlistName, open, onOpenChange, 
     if (!open) return;
     const fetchSchedule = async () => {
       setLoading(true);
-      const { data, error } = await supabase
-        .from("playlist_schedules")
-        .select("*")
-        .eq("playlist_id", playlistId)
-        .limit(1)
-        .maybeSingle();
-
-      if (error) {
+      const res = await authedFetch(`/api/playlist-schedules?playlistId=${playlistId}`);
+      const json = await res.json();
+      if (!res.ok) {
         toast.error("Erro ao carregar programação da playlist.");
         setLoading(false);
         return;
       }
+      const data = (json.schedules ?? []).find((s: any) => s.playlist_id === playlistId) ?? null;
+      const error = null;
 
       if (data) {
         const d = data as any;
@@ -275,24 +273,25 @@ const PlaylistScheduleDialog = ({ playlistId, playlistName, open, onOpenChange, 
       payload.scheduled_volume = schedule.scheduled_volume;
     }
 
-    let error;
+    let error: string | null = null;
     if (schedule.id) {
-      ({ error } = await supabase
-        .from("playlist_schedules")
-        .update(payload)
-        .eq("id", schedule.id));
+      const res = await authedFetch("/api/playlist-schedules", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: schedule.id, ...payload }),
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); error = e?.error ?? "Erro"; }
     } else {
-      const userId = storeUser?.id;
-      ({ error } = await supabase
-        .from("playlist_schedules")
-        .insert([{
-          ...payload,
-          user_id: userId ?? ANONYMOUS_SCHEDULE_USER_ID,
-        }] as any));
+      const res = await authedFetch("/api/playlist-schedules", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); error = e?.error ?? "Erro"; }
     }
 
     if (error) {
-      toast.error(`Erro ao salvar programação: ${error.message}`);
+      toast.error(`Erro ao salvar programação: ${error}`);
     } else {
       await consumeFeature("programar_playlists");
       toast.success("Programação salva!");
@@ -307,11 +306,8 @@ const PlaylistScheduleDialog = ({ playlistId, playlistName, open, onOpenChange, 
   const handleDelete = async () => {
     if (!schedule.id) return;
     setSaving(true);
-    const { error } = await supabase
-      .from("playlist_schedules")
-      .delete()
-      .eq("id", schedule.id);
-    if (error) {
+    const delRes = await authedFetch(`/api/playlist-schedules?id=${schedule.id}`, { method: "DELETE" });
+    if (!delRes.ok) {
       toast.error("Erro ao remover programação.");
     } else {
       toast.success("Programação removida.");
