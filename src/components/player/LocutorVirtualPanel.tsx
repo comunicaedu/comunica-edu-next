@@ -601,11 +601,42 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
     }
   }, [previewingVoice, previewCache, fetchPreviewUrl, previewTexts]);
 
-  const handleInsert = (mode?: InsertMode, scheduledAt?: string) => {
+  // Persiste spot no banco (upload do blob + insert na tabela spots)
+  const persistSpot = async (blobUrl: string, title: string): Promise<string | null> => {
+    try {
+      const res = await fetch(blobUrl);
+      const blob = await res.blob();
+      const file = new File([blob], `locutor-${Date.now()}.mp3`, { type: "audio/mpeg" });
+      const form = new FormData();
+      form.append("file", file);
+      form.append("title", title);
+      const uploadRes = await authedFetch("/api/spots", { method: "POST", body: form });
+      if (!uploadRes.ok) return null;
+      const { spot } = await uploadRes.json();
+      return spot?.id ?? null;
+    } catch { return null; }
+  };
+
+  const handleInsert = async (mode?: InsertMode, scheduledAt?: string) => {
     if (!audioUrl || !onInsert) return;
     const title = `Locutor: ${text.slice(0, 40)}${text.length > 40 ? "…" : ""}`;
     const m = mode ?? insertMode;
     onInsert(`direct:${audioUrl}`, m, title, scheduledAt);
+
+    // Persiste no banco
+    const spotTitle = spotName.trim() || title;
+    const spotId = await persistSpot(audioUrl, spotTitle);
+
+    // Se programado e spot salvo com sucesso, cria spot_config com schedule
+    if (scheduledAt && spotId) {
+      const schedEnd = schedEndDate && schedEndTime ? `${schedEndDate}T${schedEndTime}` : null;
+      await authedFetch("/api/spots/configs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spot_id: spotId, enabled: true, priority: 1, scheduleStart: scheduledAt, scheduleEnd: schedEnd }),
+      }).catch(() => {});
+    }
+
     toast.success(scheduledAt ? `Narração agendada para ${scheduledAt}!` : "Narração inserida no player!");
     setShowSchedule(false);
     setSchedDate("");
@@ -789,12 +820,23 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
     a.href = mixedAudioUrl; a.download = `spot-trilha-${Date.now()}.wav`; a.click();
   };
 
-  const handleInsertMixed = (mode?: InsertMode, scheduledAt?: string) => {
+  const handleInsertMixed = async (mode?: InsertMode, scheduledAt?: string) => {
     if (!mixedAudioUrl || !onInsert) return;
     const track = selectedInstrumental ? getTrack(selectedInstrumental) : null;
     const name  = spotName.trim() || text.slice(0, 28) + (text.length > 28 ? "…" : "");
     const title = `Spot: ${name} + ${track?.name ?? "trilha"}`;
     onInsert(`direct:${mixedAudioUrl}`, mode ?? "queue", title, scheduledAt);
+
+    const spotId = await persistSpot(mixedAudioUrl, name);
+
+    if (scheduledAt && spotId) {
+      await authedFetch("/api/spots/configs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spot_id: spotId, enabled: true, priority: 1, scheduleStart: scheduledAt, scheduleEnd: null }),
+      }).catch(() => {});
+    }
+
     const who = userName ? ` · ${userName}` : "";
     toast.success(scheduledAt ? `Spot agendado${who}!` : `Spot inserido no player${who}!`);
   };

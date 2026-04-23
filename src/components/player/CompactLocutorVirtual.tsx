@@ -205,12 +205,39 @@ const CompactLocutorVirtual = ({ open, onClose, onInsert, onPreviewStart, isLock
     const a = document.createElement("a"); a.href = url; a.download = `locutor-${Date.now()}.${activeOut === "spot" ? "wav" : "mp3"}`; a.click();
   };
 
-  const insert = (mode: InsertMode, scheduled?: string) => {
+  // Persiste spot no banco (upload do blob + insert na tabela spots)
+  const persistSpot = async (blobUrl: string, title: string): Promise<string | null> => {
+    try {
+      const res = await fetch(blobUrl);
+      const blob = await res.blob();
+      const file = new File([blob], `locutor-${Date.now()}.mp3`, { type: "audio/mpeg" });
+      const form = new FormData();
+      form.append("file", file);
+      form.append("title", title);
+      const uploadRes = await authedFetch("/api/spots", { method: "POST", body: form });
+      if (!uploadRes.ok) return null;
+      const { spot } = await uploadRes.json();
+      return spot?.id ?? null;
+    } catch { return null; }
+  };
+
+  const insert = async (mode: InsertMode, scheduled?: string) => {
     const url = activeOut === "spot" ? mixedUrl : audioUrl;
     if (!url) { toast.info("Gere o áudio primeiro."); return; }
     if (!onInsert) return;
     const title = `Locutor: ${text.slice(0, 30)}${text.length > 30 ? "…" : ""}`;
     onInsert(`direct:${url}`, mode, title, scheduled);
+
+    const spotId = await persistSpot(url, title);
+
+    if (scheduled && spotId) {
+      await authedFetch("/api/spots/configs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spot_id: spotId, enabled: true, priority: 1, scheduleStart: scheduled, scheduleEnd: null }),
+      }).catch(() => {});
+    }
+
     if (scheduled) setShowSched(false);
   };
 
