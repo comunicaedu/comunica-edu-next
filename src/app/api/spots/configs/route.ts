@@ -6,10 +6,15 @@ export async function GET(req: NextRequest) {
   const ctx = await resolveApiUser(req);
   if (!ctx) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const { data, error } = await ctx.db
+  let query = ctx.db
     .from("spot_configs")
-    .select("spot_id, priority, enabled, schedule_start, schedule_end, interval_songs")
-    .eq("user_id", ctx.userId);
+    .select("spot_id, user_id, priority, enabled, schedule_start, schedule_end, interval_songs");
+
+  if (!ctx.isAdmin) {
+    query = query.eq("user_id", ctx.userId);
+  }
+
+  const { data, error } = await query;
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
