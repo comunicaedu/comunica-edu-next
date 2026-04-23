@@ -283,9 +283,9 @@ const ProgramacaoPanel = () => {
       .map((c: any) => ({
         spotId: c.spot_id,
         spotTitle: spotMap[c.spot_id]?.title ?? c.spot_id,
-        userId: c.user_id,
-        scheduleStart: c.schedule_start,
-        scheduleEnd: c.schedule_end,
+        userId: c.user_id ?? spotMap[c.spot_id]?.user_id ?? "",
+        scheduleStart: c.scheduleStart ?? c.schedule_start ?? null,
+        scheduleEnd: c.scheduleEnd ?? c.schedule_end ?? null,
       }));
     setScheduledSpots(spots);
 
