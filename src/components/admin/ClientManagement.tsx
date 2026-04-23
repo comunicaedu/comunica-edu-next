@@ -402,6 +402,10 @@ const ClientManagement = () => {
   }, []);
 
   const fetchClients = useCallback(async (scrollToUserId?: string) => {
+    const storeToken = useSessionStore.getState().token;
+    const storeHydrated = useSessionStore.getState().hydrated;
+    if (!storeHydrated || !storeToken) return;
+
     setLoading(true);
     try {
       const res = await authedFetch("/api/admin/list-clients", {
@@ -473,7 +477,9 @@ const ClientManagement = () => {
     setLoading(false);
   }, [toast]);
 
-  useEffect(() => { fetchClients(); }, [fetchClients]);
+  const storeHydrated = useSessionStore(s => s.hydrated);
+  const storeToken = useSessionStore(s => s.token);
+  useEffect(() => { fetchClients(); }, [fetchClients, storeHydrated, storeToken]);
 
 
   const isFeatureEnabled = (userId: string, featureKey: string): boolean => {
