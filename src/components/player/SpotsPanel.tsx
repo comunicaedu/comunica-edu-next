@@ -180,6 +180,7 @@ function SpotRow({
           )}
           <div className="flex items-center gap-1.5 mt-0.5">
             <span className="text-xs text-muted-foreground">{new Date(spot.created_at).toLocaleDateString("pt-BR")}</span>
+            {spot.owner_name && <span className="text-[10px] rounded px-1.5 py-0.5 bg-primary/15 text-primary">{spot.owner_name}</span>}
             <span className={`text-[10px] rounded px-1.5 py-0.5 transition-opacity ${cfg.scheduleStart ? "bg-blue-500/20 text-blue-400 opacity-100" : "opacity-0 pointer-events-none select-none"}`}>agendado</span>
           </div>
         </div>
