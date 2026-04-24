@@ -200,12 +200,8 @@ function SpotRow({
       {/* ── Linha 2: Dono | Prioridade | Agendamento + Toggle ── */}
       <div className="flex items-center justify-between gap-2 px-3 py-2 border-t border-border/20">
 
-        {/* Dono do spot (onde ficavam os botões de intervalo individual) */}
-        <div className="flex items-center shrink-0 min-w-[72px]">
-          {showOwner && spot.owner_name && (
-            <span className="text-[10px] bg-primary/15 text-primary rounded px-1.5 py-0.5 font-medium truncate">{spot.owner_name}</span>
-          )}
-        </div>
+        {/* Espaçador — badge do dono já aparece na linha 1 */}
+        <div className="shrink-0 min-w-[72px]" />
 
         <div className="w-px h-4 bg-border/30 shrink-0" />
 
@@ -540,9 +536,12 @@ const SpotsPanel = ({ userId: propUserId, isAdmin = false, isLocked = false, isU
     });
 
     const onCfgChange = () => setConfigs({ ...loadSpotConfigs() });
+    const onSpotsChanged = () => { if (tokenRef.current) loadSpots(tokenRef.current); };
     window.addEventListener("spot-configs-changed", onCfgChange);
+    window.addEventListener("spots-changed", onSpotsChanged);
     return () => {
       window.removeEventListener("spot-configs-changed", onCfgChange);
+      window.removeEventListener("spots-changed", onSpotsChanged);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

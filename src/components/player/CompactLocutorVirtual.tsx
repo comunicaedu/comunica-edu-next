@@ -186,7 +186,7 @@ const CompactLocutorVirtual = ({ open, onClose, onInsert, onPreviewStart, isLock
       if (audioRef.current) { audioRef.current.src = url; onPreviewStart?.(); audioRef.current.play().catch(() => {}); setPlaying(true); }
       // Persiste automaticamente
       const name = spotName.trim() || `Spot locutor ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
-      persistSpot(url, name).then(id => { if (id) toast.success("Spot salvo!"); });
+      persistSpot(url, name).then(id => { if (id) { toast.success("Spot salvo!"); window.dispatchEvent(new Event("spots-changed")); } });
     } catch { toast.error("Falha na conexão."); }
     finally { setGenerating(false); }
   };

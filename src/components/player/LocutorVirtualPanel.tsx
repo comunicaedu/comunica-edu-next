@@ -344,7 +344,7 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
 
       // Persiste automaticamente no banco
       const name = spotName.trim() || `Spot locutor ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
-      persistSpot(url, name).then(id => { if (id) toast.success("Spot salvo no painel!"); });
+      persistSpot(url, name).then(id => { if (id) { toast.success("Spot salvo no painel!"); window.dispatchEvent(new Event("spots-changed")); } });
     } catch { toast.error("Falha na conexão."); }
     finally   { setIsGenerating(false); }
   };
@@ -815,7 +815,7 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
 
       // Persiste automaticamente no banco
       const name = spotName.trim() || text.slice(0, 28) + (text.length > 28 ? "…" : "");
-      persistSpot(url, name).then(id => { if (id) toast.success("Spot salvo no painel!"); });
+      persistSpot(url, name).then(id => { if (id) { toast.success("Spot salvo no painel!"); window.dispatchEvent(new Event("spots-changed")); } });
     } catch (e) { console.error("[handleMix]", e); toast.error("Erro ao misturar áudio."); }
     finally { setIsMixing(false); }
   };
