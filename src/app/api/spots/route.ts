@@ -18,9 +18,9 @@ export async function GET(req: NextRequest) {
   const { data, error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  // Para admin: busca profiles de todos os donos para montar a tag
-  let profileMap: Record<string, string> = {};
-  if (ctx.isAdmin && data && data.length > 0) {
+  // Busca profiles de todos os donos para montar a tag (R3: badge em todos os painéis)
+  const profileMap: Record<string, string> = {};
+  if (data && data.length > 0) {
     const ownerIds = [...new Set(data.map((s: any) => s.user_id))];
     const { data: profiles } = await ctx.db
       .from("profiles")
@@ -49,8 +49,8 @@ export async function GET(req: NextRequest) {
         ...s,
         file_path: signed?.signedUrl ?? s.file_path,
         storage_path: s.file_path,
-        owner_name: ctx.isAdmin ? (profileMap[s.user_id] ?? s.user_id.slice(0, 8)) : undefined,
-        owner_id: ctx.isAdmin ? s.user_id : undefined,
+        owner_name: profileMap[s.user_id] ?? s.user_id.slice(0, 8),
+        owner_id: s.user_id,
       };
     })
   );

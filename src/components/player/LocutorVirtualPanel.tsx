@@ -341,6 +341,10 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
       }
       setActiveOutput("voice");
       toast.success("Narração pronta!");
+
+      // Persiste automaticamente no banco
+      const name = spotName.trim() || `Spot locutor ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
+      persistSpot(url, name).then(id => { if (id) toast.success("Spot salvo no painel!"); });
     } catch { toast.error("Falha na conexão."); }
     finally   { setIsGenerating(false); }
   };
@@ -604,17 +608,21 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
   // Persiste spot no banco (upload do blob + insert na tabela spots)
   const persistSpot = async (blobUrl: string, title: string): Promise<string | null> => {
     try {
-      const res = await fetch(blobUrl);
+      // Se é blob: URL, converte para File. Se é direct:, extrai a URL real.
+      const realUrl = blobUrl.startsWith("direct:") ? blobUrl.slice(7) : blobUrl;
+      const res = await fetch(realUrl);
       const blob = await res.blob();
-      const file = new File([blob], `locutor-${Date.now()}.mp3`, { type: "audio/mpeg" });
+      if (blob.size === 0) { console.warn("[persistSpot] blob vazio"); return null; }
+      const ext = blob.type.includes("wav") ? "wav" : "mp3";
+      const file = new File([blob], `locutor-${Date.now()}.${ext}`, { type: blob.type || "audio/mpeg" });
       const form = new FormData();
       form.append("file", file);
-      form.append("title", title);
+      form.append("title", title || `Spot locutor ${new Date().toISOString().slice(0, 16).replace("T", " ")}`);
       const uploadRes = await authedFetch("/api/spots", { method: "POST", body: form });
-      if (!uploadRes.ok) return null;
+      if (!uploadRes.ok) { console.error("[persistSpot] upload falhou:", await uploadRes.text().catch(() => "")); return null; }
       const { spot } = await uploadRes.json();
       return spot?.id ?? null;
-    } catch { return null; }
+    } catch (e) { console.error("[persistSpot] erro:", e); return null; }
   };
 
   const handleInsert = async (mode?: InsertMode, scheduledAt?: string) => {
@@ -804,6 +812,10 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
       setIsMixedPlaying(false);
       setActiveOutput("spot");
       toast.success("Spot com trilha criado!");
+
+      // Persiste automaticamente no banco
+      const name = spotName.trim() || text.slice(0, 28) + (text.length > 28 ? "…" : "");
+      persistSpot(url, name).then(id => { if (id) toast.success("Spot salvo no painel!"); });
     } catch (e) { console.error("[handleMix]", e); toast.error("Erro ao misturar áudio."); }
     finally { setIsMixing(false); }
   };
@@ -1059,6 +1071,17 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
           </div>
         </div>
 
+        {/* Nome do spot — ANTES de gerar */}
+        <div className="shrink-0">
+          <input
+            type="text"
+            placeholder="Nome do spot…"
+            value={spotName}
+            onChange={e => setSpotName(e.target.value.slice(0, 50))}
+            className="w-full bg-secondary/50 border border-border/40 rounded-md px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-primary/60 placeholder:text-muted-foreground/50"
+          />
+        </div>
+
         {/* Generate button */}
         <Button
           onClick={isLocked ? showBadge : handleGenerate}
@@ -1206,18 +1229,6 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
                   }
                 </Button>
 
-                {/* Campo nome do spot — aparece após criar */}
-                {mixedAudioUrl && (
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      placeholder="Nome do spot (opcional)…"
-                      value={spotName}
-                      onChange={e => setSpotName(e.target.value.slice(0, 50))}
-                      className="flex-1 bg-secondary/50 border border-border/40 rounded-md px-2.5 py-1.5 text-xs text-foreground outline-none focus:border-primary/60 placeholder:text-muted-foreground/50"
-                    />
-                  </div>
-                )}
 
                 <audio ref={mixedAudioRef} src={mixedAudioUrl ?? undefined} onEnded={() => setIsMixedPlaying(false)} className="hidden" />
                 <audio ref={instrPreviewRef} onEnded={() => setPreviewingInstrumental(null)} className="hidden" />

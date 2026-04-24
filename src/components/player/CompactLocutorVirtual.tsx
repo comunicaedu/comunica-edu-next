@@ -64,6 +64,7 @@ const CompactLocutorVirtual = ({ open, onClose, onInsert, onPreviewStart, isLock
   };
 
   // Text & voice
+  const [spotName, setSpotName]     = useState("");
   const [text, setText]             = useState("");
   const [voice, setVoice]           = useState("masculina-jovem");
   const [speed, setSpeed]           = useState([1.0]);
@@ -183,6 +184,9 @@ const CompactLocutorVirtual = ({ open, onClose, onInsert, onPreviewStart, isLock
       const url = URL.createObjectURL(blob);
       blobRef.current = url; setAudioUrl(url); setActiveOut("voice");
       if (audioRef.current) { audioRef.current.src = url; onPreviewStart?.(); audioRef.current.play().catch(() => {}); setPlaying(true); }
+      // Persiste automaticamente
+      const name = spotName.trim() || `Spot locutor ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
+      persistSpot(url, name).then(id => { if (id) toast.success("Spot salvo!"); });
     } catch { toast.error("Falha na conexão."); }
     finally { setGenerating(false); }
   };
@@ -208,12 +212,15 @@ const CompactLocutorVirtual = ({ open, onClose, onInsert, onPreviewStart, isLock
   // Persiste spot no banco (upload do blob + insert na tabela spots)
   const persistSpot = async (blobUrl: string, title: string): Promise<string | null> => {
     try {
-      const res = await fetch(blobUrl);
+      const realUrl = blobUrl.startsWith("direct:") ? blobUrl.slice(7) : blobUrl;
+      const res = await fetch(realUrl);
       const blob = await res.blob();
-      const file = new File([blob], `locutor-${Date.now()}.mp3`, { type: "audio/mpeg" });
+      if (blob.size === 0) return null;
+      const ext = blob.type.includes("wav") ? "wav" : "mp3";
+      const file = new File([blob], `locutor-${Date.now()}.${ext}`, { type: blob.type || "audio/mpeg" });
       const form = new FormData();
       form.append("file", file);
-      form.append("title", title);
+      form.append("title", title || `Spot locutor ${new Date().toISOString().slice(0, 16).replace("T", " ")}`);
       const uploadRes = await authedFetch("/api/spots", { method: "POST", body: form });
       if (!uploadRes.ok) return null;
       const { spot } = await uploadRes.json();
@@ -225,10 +232,11 @@ const CompactLocutorVirtual = ({ open, onClose, onInsert, onPreviewStart, isLock
     const url = activeOut === "spot" ? mixedUrl : audioUrl;
     if (!url) { toast.info("Gere o áudio primeiro."); return; }
     if (!onInsert) return;
-    const title = `Locutor: ${text.slice(0, 30)}${text.length > 30 ? "…" : ""}`;
-    onInsert(`direct:${url}`, mode, title, scheduled);
+    const rawTitle = `Locutor: ${text.slice(0, 30)}${text.length > 30 ? "…" : ""}`;
+    const spotTitle = spotName.trim() || rawTitle;
+    onInsert(`direct:${url}`, mode, spotTitle, scheduled);
 
-    const spotId = await persistSpot(url, title);
+    const spotId = await persistSpot(url, spotTitle);
 
     if (scheduled && spotId) {
       await authedFetch("/api/spots/configs", {
@@ -362,6 +370,10 @@ const CompactLocutorVirtual = ({ open, onClose, onInsert, onPreviewStart, isLock
           <span className="text-[9px] text-muted-foreground whitespace-nowrap">Vel: {speed[0].toFixed(1)}x</span>
           <div className="flex-1"><Slider value={speed} onValueChange={setSpeed} min={0.7} max={1.2} step={0.1} /></div>
         </div>
+
+        {/* Nome do spot */}
+        <input type="text" placeholder="Nome do spot…" value={spotName} onChange={e => setSpotName(e.target.value.slice(0, 50))}
+          className="w-full bg-secondary/50 border border-border/40 rounded-md px-2 py-1 text-[10px] text-foreground outline-none focus:border-primary/50 placeholder:text-muted-foreground/50" />
 
         {/* Generate */}
         <button type="button" onClick={generate} disabled={generating || !text.trim()}

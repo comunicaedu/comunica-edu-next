@@ -1136,7 +1136,7 @@ const SpotsPanel = ({ userId: propUserId, isAdmin = false, isLocked = false, isU
                 <SpotRow key={spot.id} spot={spot}
                   cfg={configs[spot.id] ?? DEFAULT_SPOT_CONFIG}
                   isSelected={selectedIds.has(spot.id)}
-                  showOwner={isAdmin}
+                  showOwner
                   onToggleSelect={() => setSelectedIds((prev) => {
                     const next = new Set(prev);
                     if (next.has(spot.id)) next.delete(spot.id); else next.add(spot.id);

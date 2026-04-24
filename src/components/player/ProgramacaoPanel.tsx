@@ -289,8 +289,8 @@ const ProgramacaoPanel = () => {
       }));
     setScheduledSpots(spots);
 
-    // Para admin: busca nomes dos clientes
-    if (callerIsAdmin) {
+    // Busca nomes dos clientes para badges (R3: visível para admin e cliente)
+    {
       const allUserIds = [
         ...new Set([
           ...(schedulesResponse.data || []).map((s: any) => s.user_id).filter(Boolean),
@@ -467,7 +467,7 @@ const ProgramacaoPanel = () => {
                   {scheduledPlaylists.map((playlist) => {
                     const schedule = schedulesByPlaylist[playlist.id];
                     const status = getScheduleStatus(schedule, now);
-                    const clientName = isAdmin && schedule.user_id ? (clientNames[schedule.user_id] ?? schedule.user_id?.slice(0, 8)) : null;
+                    const clientName = schedule.user_id ? (clientNames[schedule.user_id] ?? schedule.user_id?.slice(0, 8)) : null;
 
                     return (
                       <div
@@ -513,7 +513,7 @@ const ProgramacaoPanel = () => {
                   <p className="text-[11px] font-semibold text-white/40 uppercase tracking-wider px-1">Spots</p>
                   {scheduledSpots.map((spot) => {
                     const status = getSpotStatus(spot, now);
-                    const clientName = isAdmin && spot.userId ? (clientNames[spot.userId] ?? spot.userId?.slice(0, 8)) : null;
+                    const clientName = spot.userId ? (clientNames[spot.userId] ?? spot.userId?.slice(0, 8)) : null;
                     return (
                       <div
                         key={spot.spotId}
