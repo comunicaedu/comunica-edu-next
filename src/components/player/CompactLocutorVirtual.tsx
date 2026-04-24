@@ -95,6 +95,7 @@ const CompactLocutorVirtual = ({ open, onClose, onInsert, onPreviewStart, isLock
   const [mixedPlaying, setMixedPlaying]   = useState(false);
   const [activeOut, setActiveOut]         = useState<"voice"|"spot">("voice");
   const mixedBlobRef = useRef<string | null>(null);
+  const lastSpotIdRef = useRef<string | null>(null);
 
   // Schedule
   const [showSched, setShowSched]   = useState(false);
@@ -176,6 +177,7 @@ const CompactLocutorVirtual = ({ open, onClose, onInsert, onPreviewStart, isLock
     if (isLocked) { showLockedBadge(); return; }
     if (!text.trim()) { toast.error("Digite o texto primeiro."); return; }
     setGenerating(true); setAudioUrl(null); setPlaying(false);
+    lastSpotIdRef.current = null;
     if (blobRef.current) { URL.revokeObjectURL(blobRef.current); blobRef.current = null; }
     try {
       const res = await authedFetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: text.trim(), voice, speed: speed[0], stability: STABILITY, style: STYLE }) });
@@ -184,9 +186,11 @@ const CompactLocutorVirtual = ({ open, onClose, onInsert, onPreviewStart, isLock
       const url = URL.createObjectURL(blob);
       blobRef.current = url; setAudioUrl(url); setActiveOut("voice");
       if (audioRef.current) { audioRef.current.src = url; onPreviewStart?.(); audioRef.current.play().catch(() => {}); setPlaying(true); }
-      // Persiste automaticamente
+      // Persiste automaticamente (spotId guardado para evitar duplicatas no insert)
       const name = spotName.trim() || `Spot locutor ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
-      persistSpot(url, name).then(id => { if (id) { toast.success("Spot salvo!"); window.dispatchEvent(new Event("spots-changed")); } });
+      persistSpot(url, name).then(id => {
+        if (id) { lastSpotIdRef.current = id; toast.success("Spot salvo!"); window.dispatchEvent(new Event("spots-changed")); }
+      });
     } catch { toast.error("Falha na conexão."); }
     finally { setGenerating(false); }
   };
@@ -236,7 +240,8 @@ const CompactLocutorVirtual = ({ open, onClose, onInsert, onPreviewStart, isLock
     const spotTitle = spotName.trim() || rawTitle;
     onInsert(`direct:${url}`, mode, spotTitle, scheduled);
 
-    const spotId = await persistSpot(url, spotTitle);
+    // Reutiliza spotId já salvo na geração (evita duplicata)
+    const spotId = lastSpotIdRef.current;
 
     if (scheduled && spotId) {
       await authedFetch("/api/spots/configs", {

@@ -183,6 +183,7 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
   const mixedBlobRef    = useRef<string | null>(null);
   const mixedAudioRef   = useRef<HTMLAudioElement>(null);
   const instrPreviewRef = useRef<HTMLAudioElement>(null);
+  const lastSpotIdRef   = useRef<string | null>(null);
 
 
   /* Load user */
@@ -306,6 +307,7 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
     setIsGenerating(true);
     setAudioUrl(null);
     setIsPlaying(false);
+    lastSpotIdRef.current = null;
     if (prevBlobUrl.current) { URL.revokeObjectURL(prevBlobUrl.current); prevBlobUrl.current = null; }
 
     try {
@@ -342,9 +344,11 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
       setActiveOutput("voice");
       toast.success("Narração pronta!");
 
-      // Persiste automaticamente no banco
+      // Persiste automaticamente no banco (spotId guardado para evitar duplicatas no insert)
       const name = spotName.trim() || `Spot locutor ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
-      persistSpot(url, name).then(id => { if (id) { toast.success("Spot salvo no painel!"); window.dispatchEvent(new Event("spots-changed")); } });
+      persistSpot(url, name).then(id => {
+        if (id) { lastSpotIdRef.current = id; toast.success("Spot salvo no painel!"); window.dispatchEvent(new Event("spots-changed")); }
+      });
     } catch { toast.error("Falha na conexão."); }
     finally   { setIsGenerating(false); }
   };
@@ -631,9 +635,8 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
     const m = mode ?? insertMode;
     onInsert(`direct:${audioUrl}`, m, title, scheduledAt);
 
-    // Persiste no banco
-    const spotTitle = spotName.trim() || title;
-    const spotId = await persistSpot(audioUrl, spotTitle);
+    // Reutiliza spotId já salvo na geração (evita duplicata)
+    const spotId = lastSpotIdRef.current;
 
     // Se programado e spot salvo com sucesso, cria spot_config com schedule
     if (scheduledAt && spotId) {
@@ -813,9 +816,12 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
       setActiveOutput("spot");
       toast.success("Spot com trilha criado!");
 
-      // Persiste automaticamente no banco
+      // Persiste automaticamente no banco (spotId guardado para evitar duplicatas no insertMixed)
+      lastSpotIdRef.current = null;
       const name = spotName.trim() || text.slice(0, 28) + (text.length > 28 ? "…" : "");
-      persistSpot(url, name).then(id => { if (id) { toast.success("Spot salvo no painel!"); window.dispatchEvent(new Event("spots-changed")); } });
+      persistSpot(url, name).then(id => {
+        if (id) { lastSpotIdRef.current = id; toast.success("Spot salvo no painel!"); window.dispatchEvent(new Event("spots-changed")); }
+      });
     } catch (e) { console.error("[handleMix]", e); toast.error("Erro ao misturar áudio."); }
     finally { setIsMixing(false); }
   };
@@ -839,7 +845,8 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
     const title = `Spot: ${name} + ${track?.name ?? "trilha"}`;
     onInsert(`direct:${mixedAudioUrl}`, mode ?? "queue", title, scheduledAt);
 
-    const spotId = await persistSpot(mixedAudioUrl, name);
+    // Reutiliza spotId já salvo no handleMix (evita duplicata)
+    const spotId = lastSpotIdRef.current;
 
     if (scheduledAt && spotId) {
       await authedFetch("/api/spots/configs", {
