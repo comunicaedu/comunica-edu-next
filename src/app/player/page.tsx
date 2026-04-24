@@ -44,6 +44,7 @@ import {
   getCachedSpots,
   intercalateSpots,
   isSpotItem,
+  invalidateAllCaches,
 } from "@/lib/spotIntercalate";
 import { loadSpotConfigs, fetchSpotConfigs, setCachedSpotConfigs } from "@/lib/spotConfig";
 import VoiceRecorderModal, { type InsertMode } from "@/components/player/VoiceRecorderModal";
@@ -1152,13 +1153,12 @@ function PlayerPageContent() {
     }
 
     // ── Scheduled spots: insert at nearest song boundary ──────────────────────
-    // At each song transition, check if any spot has a scheduleStart whose target
-    // time falls within [T - 6min, T + 5min] of now. If so, insert it next in
-    // the queue (before the upcoming regular song) and mark it as played.
+    // P2-fix: janela alargada (90s de cada lado = 3 min total) para reduzir miss
+    // quando a música é longa. Também rodamos um setInterval dedicado fora daqui.
     {
       const now          = Date.now();
-      const LOOKAHEAD_MS = 60 * 1000; // up to 1 min before scheduled time
-      const GRACE_MS     = 60 * 1000; // up to 1 min after scheduled time
+      const LOOKAHEAD_MS = 90 * 1000;
+      const GRACE_MS     = 90 * 1000;
       const configs   = loadSpotConfigs();
       const allSpots  = getCachedSpots();
 
@@ -1406,6 +1406,66 @@ function PlayerPageContent() {
       window.removeEventListener("spots-updated", rebuild);
       window.removeEventListener("spot-configs-changed", rebuild);
     };
+  }, []);
+
+  // P2-fix: setInterval dedicado (30s) que insere spots programados sem depender
+  // de troca de música. Janela [-90s, +90s]. Não avança a música — só enfileira.
+  useEffect(() => {
+    const check = () => {
+      const { queue: currentQueue, queueIndex: qi } = queueRef.current;
+      if (!currentQueue || currentQueue.length === 0) return;
+      const now = Date.now();
+      const LOOKAHEAD_MS = 90 * 1000;
+      const GRACE_MS     = 90 * 1000;
+      const configs  = loadSpotConfigs();
+      const allSpots = getCachedSpots();
+      for (const track of allSpots) {
+        const cfg = configs[track.id];
+        if (!cfg?.scheduleStart || !cfg.enabled) continue;
+        const target = new Date(cfg.scheduleStart).getTime();
+        if (Number.isNaN(target)) continue;
+        if (now < target - LOOKAHEAD_MS || now > target + GRACE_MS) continue;
+        const key = `${track.id}_${cfg.scheduleStart}`;
+        if (scheduledSpotPlayedRef.current.has(key)) continue;
+        scheduledSpotPlayedRef.current.add(key);
+        const spotSong: Song = {
+          id: `scheduled-${track.id}-${Date.now()}`,
+          title: track.title,
+          artist: null,
+          genre: "spot",
+          file_path: track.file_path,
+          cover_url: track.cover_url ?? null,
+          created_at: track.created_at,
+        };
+        const insertIdx = qi + 1;
+        const newQueue = [
+          ...currentQueue.slice(0, insertIdx),
+          spotSong,
+          ...currentQueue.slice(insertIdx),
+        ];
+        setQueue(newQueue);
+        queueRef.current = { ...queueRef.current, queue: newQueue };
+        break;
+      }
+    };
+    check();
+    const id = window.setInterval(check, 30_000);
+    return () => window.clearInterval(id);
+  }, [setQueue]);
+
+  // P6-fix: quando o user do sessionStore muda (login, logout, impersonation enter/exit),
+  // invalida todos os caches in-memory pra evitar que dados do user anterior vazem.
+  useEffect(() => {
+    let lastId: string | null = useSessionStore.getState().user?.id ?? null;
+    const unsub = useSessionStore.subscribe((state) => {
+      const newId = state.user?.id ?? null;
+      if (newId !== lastId) {
+        invalidateAllCaches();
+        scheduledSpotPlayedRef.current.clear();
+        lastId = newId;
+      }
+    });
+    return () => { unsub(); };
   }, []);
 
   // ── Realtime deletion handler: stop playback if current song/playlist is deleted ──

@@ -6,6 +6,7 @@ import { Slider } from "@/components/ui/slider";
 import { toast } from "sonner";
 import { authedFetch } from "@/lib/authedFetch";
 import { useSessionStore } from "@/stores/sessionStore";
+import { invalidateSpotsCache } from "@/lib/spotIntercalate";
 import type { InsertMode } from "@/components/player/VoiceRecorderModal";
 
 const VOICES = [
@@ -244,11 +245,18 @@ const CompactLocutorVirtual = ({ open, onClose, onInsert, onPreviewStart, isLock
     const spotId = lastSpotIdRef.current;
 
     if (scheduled && spotId) {
-      await authedFetch("/api/spots/configs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ spot_id: spotId, enabled: true, priority: 1, scheduleStart: scheduled, scheduleEnd: null }),
-      }).catch(() => {});
+      try {
+        const r = await authedFetch("/api/spots/configs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ spot_id: spotId, enabled: true, priority: 1, scheduleStart: scheduled, scheduleEnd: null }),
+        });
+        if (r.ok) {
+          window.dispatchEvent(new Event("spot-configs-changed"));
+          window.dispatchEvent(new Event("spots-changed"));
+          invalidateSpotsCache();
+        }
+      } catch { /* silent */ }
     }
 
     if (scheduled) setShowSched(false);

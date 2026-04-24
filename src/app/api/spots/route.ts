@@ -58,7 +58,8 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ spots });
 }
 
-// POST — upload de spot (cliente envia para si mesmo)
+// POST — upload de spot. Se `replace_id` for enviado, substitui o file_path do spot existente
+// (usado pelo fluxo mix do Locutor Virtual pra evitar spot duplicado).
 export async function POST(req: NextRequest) {
   const ctx = await resolveApiUser(req);
   if (!ctx) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -66,13 +67,45 @@ export async function POST(req: NextRequest) {
   const formData = await req.formData();
   const file = formData.get("file") as File | null;
   const title = (formData.get("title") as string | null) ?? "";
+  const replaceId = (formData.get("replace_id") as string | null) ?? null;
 
   if (!file) return NextResponse.json({ error: "Arquivo não enviado" }, { status: 400 });
 
   const ext = file.name.split(".").pop() ?? "mp3";
   const storagePath = `${ctx.userId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-
   const buffer = Buffer.from(await file.arrayBuffer());
+  // `type` é fixado em "mp3" porque a constraint do banco não aceita outros valores.
+  // O tipo real do arquivo está em file_path (extensão) e no contentType do storage.
+  const spotType = "mp3";
+
+  if (replaceId) {
+    const { data: existing } = await ctx.db
+      .from("spots").select("id, user_id, file_path").eq("id", replaceId).single();
+    if (!existing) return NextResponse.json({ error: "Spot não encontrado" }, { status: 404 });
+    if (existing.user_id !== ctx.userId && !ctx.isAdmin) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    const { error: uploadError } = await ctx.db.storage
+      .from("spots").upload(storagePath, buffer, { contentType: file.type || "audio/mpeg", upsert: false });
+    if (uploadError) return NextResponse.json({ error: uploadError.message }, { status: 500 });
+
+    // Mantém o `type` original do registro — a constraint do banco não aceita "wav"
+    const updatePatch: Record<string, unknown> = { file_path: storagePath };
+    if (title) updatePatch.title = title;
+
+    const { data, error: dbError } = await ctx.db
+      .from("spots").update(updatePatch).eq("id", replaceId).select().single();
+
+    if (dbError) {
+      await ctx.db.storage.from("spots").remove([storagePath]);
+      return NextResponse.json({ error: dbError.message }, { status: 500 });
+    }
+    if (existing.file_path && existing.file_path !== storagePath) {
+      await ctx.db.storage.from("spots").remove([existing.file_path]);
+    }
+    return NextResponse.json({ spot: data });
+  }
 
   const { error: uploadError } = await ctx.db.storage
     .from("spots")
@@ -86,7 +119,7 @@ export async function POST(req: NextRequest) {
       user_id: ctx.userId,
       title: title || file.name.replace(/\.[^.]+$/, ""),
       file_path: storagePath,
-      type: "mp3",
+      type: spotType,
     })
     .select()
     .single();
@@ -121,19 +154,23 @@ export async function DELETE(req: NextRequest) {
   return NextResponse.json({ ok: true });
 }
 
-// PATCH — renomeia spot
+// PATCH — renomeia (title) ou substitui file_path. Admin altera qualquer spot.
 export async function PATCH(req: NextRequest) {
   const ctx = await resolveApiUser(req);
   if (!ctx) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const { id, title } = await req.json();
+  const { id, title, file_path } = await req.json();
+  const patch: Record<string, unknown> = {};
+  if (title !== undefined) patch.title = title;
+  if (file_path !== undefined) patch.file_path = file_path;
+  if (Object.keys(patch).length === 0) {
+    return NextResponse.json({ error: "Nenhum campo para atualizar" }, { status: 400 });
+  }
 
-  const { error } = await ctx.db
-    .from("spots")
-    .update({ title })
-    .eq("id", id)
-    .eq("user_id", ctx.userId);
+  let query = ctx.db.from("spots").update(patch).eq("id", id);
+  if (!ctx.isAdmin) query = query.eq("user_id", ctx.userId);
 
+  const { error } = await query;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });
 }

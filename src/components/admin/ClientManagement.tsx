@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/table";
 import { authedFetch } from "@/lib/authedFetch";
 import { useSessionStore } from "@/stores/sessionStore";
+import { invalidateAllCaches } from "@/lib/spotIntercalate";
 
 interface ClientProfile {
   id: string;
@@ -1410,6 +1411,9 @@ const ClientManagement = () => {
 
       // Marca visual de impersonation (isolada por aba)
       sessionStorage.setItem("edu-impersonated-username", user?.username ?? "");
+
+      // P6-fix: limpa qualquer cache in-memory do admin antes de trocar de contexto
+      invalidateAllCaches();
 
       // Hard navigation para reconstruir a UI limpa
       window.location.href = "/player";

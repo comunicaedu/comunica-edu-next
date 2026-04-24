@@ -55,13 +55,13 @@ interface ScheduledSpotItem {
 }
 
 const getSpotStatus = (item: ScheduledSpotItem, now: Date): ScheduleStatus => {
-  const today = now.toISOString().slice(0, 10);
-  // scheduleStart/End are datetimes ("2026-04-12T18:51") — extract date-only for comparison
-  const start = item.scheduleStart ? item.scheduleStart.slice(0, 10) : null;
-  const end   = item.scheduleEnd   ? item.scheduleEnd.slice(0, 10)   : null;
-  if (end && today > end) return "concluida";
-  if (start && today < start) return "agendada";
-  if ((!start || today >= start) && (!end || today <= end)) return "executando";
+  // P5-fix: compara datetime completo (não só YYYY-MM-DD) — concluída assim que a hora fim passa
+  const nowMs   = now.getTime();
+  const startMs = item.scheduleStart ? new Date(item.scheduleStart).getTime() : null;
+  const endMs   = item.scheduleEnd   ? new Date(item.scheduleEnd).getTime()   : null;
+  if (endMs !== null && !Number.isNaN(endMs) && nowMs > endMs) return "concluida";
+  if (startMs !== null && !Number.isNaN(startMs) && nowMs < startMs) return "agendada";
+  if ((startMs === null || nowMs >= startMs) && (endMs === null || nowMs <= endMs)) return "executando";
   return "agendada";
 };
 
@@ -70,24 +70,14 @@ type ScheduleStatus = "agendada" | "executando" | "concluida" | "desativada";
 const getScheduleStatus = (schedule: ScheduleWindow, now: Date): ScheduleStatus => {
   if (!(schedule.is_active ?? schedule.active ?? true)) return "desativada";
 
-  // Use the same logic as the automation hook so panel and playback always agree
   if (isScheduleActiveAt(schedule, now)) return "executando";
 
-  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  // P5-fix: compara datetime completo (end_date + end_time) em vez de só a data
   const endDate = schedule.end_date || null;
-
-  // If end_date is in the past → Concluída
-  if (endDate && todayStr > endDate) return "concluida";
-
-  // Check if today has already passed the time window (and today is a scheduled day)
-  const today = now.getDay();
-  if (schedule.days_of_week?.includes(today)) {
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
-    const [endH, endM] = schedule.end_time.split(":").map(Number);
-    const [startH, startM] = schedule.start_time.split(":").map(Number);
-    const endMinutes = endH * 60 + endM;
-    const startMinutes = startH * 60 + startM;
-    if (startMinutes < endMinutes && nowMinutes >= endMinutes) return "concluida";
+  if (endDate) {
+    const endTime = schedule.end_time || "23:59";
+    const endMs = new Date(`${endDate}T${endTime}`).getTime();
+    if (!Number.isNaN(endMs) && now.getTime() > endMs) return "concluida";
   }
 
   return "agendada";
@@ -262,8 +252,12 @@ const ProgramacaoPanel = () => {
     }));
     setPlaylists(enriched);
 
+    // P6-fix: filtro defensivo para playlists também
+    const schedulesFiltered = (schedulesResponse.data || []).filter((s: any) =>
+      callerIsAdmin || !s.user_id || s.user_id === uid
+    );
     const deduped = new Map<string, ScheduleWindow>();
-    (schedulesResponse.data || []).forEach((schedule: any) => {
+    schedulesFiltered.forEach((schedule: any) => {
       if (!deduped.has(schedule.playlist_id)) {
         deduped.set(schedule.playlist_id, {
           ...schedule,
@@ -278,7 +272,7 @@ const ProgramacaoPanel = () => {
     const spotMap: Record<string, { title: string; user_id: string }> = {};
     (spotsResponse.data || []).forEach((s: any) => { spotMap[s.id] = { title: s.title, user_id: s.user_id }; });
 
-    const spots: ScheduledSpotItem[] = (spotConfigsResponse.data || [])
+    const spotsRaw: ScheduledSpotItem[] = (spotConfigsResponse.data || [])
       .filter((c: any) => spotMap[c.spot_id])
       .map((c: any) => ({
         spotId: c.spot_id,
@@ -287,13 +281,19 @@ const ProgramacaoPanel = () => {
         scheduleStart: c.scheduleStart ?? c.schedule_start ?? null,
         scheduleEnd: c.scheduleEnd ?? c.schedule_end ?? null,
       }));
+
+    // P6-fix: filtro defensivo — mesmo que a API filtre, remove qualquer entrada
+    // que não pertença ao cliente atual (protege contra cache residual).
+    const spots = callerIsAdmin
+      ? spotsRaw
+      : spotsRaw.filter(s => !s.userId || s.userId === uid);
     setScheduledSpots(spots);
 
     // Busca nomes dos clientes para badges (R3: visível para admin e cliente)
     {
       const allUserIds = [
         ...new Set([
-          ...(schedulesResponse.data || []).map((s: any) => s.user_id).filter(Boolean),
+          ...schedulesFiltered.map((s: any) => s.user_id).filter(Boolean),
           ...spots.map((s) => s.userId).filter(Boolean),
         ]),
       ];
@@ -310,6 +310,15 @@ const ProgramacaoPanel = () => {
 
     setInitialLoading(false);
   }, []);
+
+  // P7-fix: admin dispara limpeza de agendamentos concluídos >=7 dias ao montar o painel
+  useEffect(() => {
+    if (!isAdmin) return;
+    authedFetch("/api/cleanup-old-schedules", { method: "POST" })
+      .then(r => r.ok ? r.json() : null)
+      .then(j => { if (j && (j.spots_deleted || j.playlists_deleted)) fetchData(); })
+      .catch(() => {});
+  }, [isAdmin, fetchData]);
 
   useEffect(() => {
     fetchData();
@@ -334,19 +343,25 @@ const ProgramacaoPanel = () => {
     };
   }, [fetchData]);
 
-  // Order is computed only when data changes (not every second) to prevent the
-  // list from visually jumping on every clock tick. Status badges still update
-  // every second because they read `now` during render.
+  // P4-fix + P5-fix: ordena por STATUS_ORDER e REMOVE concluídas.
+  // Recompute when `now` changes (cada 10s) para spots/playlists migrarem pra "concluida" e sumirem.
   const scheduledPlaylists = useMemo(() => {
     const filtered = playlists.filter((p) => schedulesByPlaylist[p.id]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    const snapshot = new Date();
-    return [...filtered].sort((a, b) => {
-      const sa = getScheduleStatus(schedulesByPlaylist[a.id], snapshot);
-      const sb = getScheduleStatus(schedulesByPlaylist[b.id], snapshot);
-      return STATUS_ORDER[sa] - STATUS_ORDER[sb];
-    });
-  }, [playlists, schedulesByPlaylist]);
+    return [...filtered]
+      .filter((p) => getScheduleStatus(schedulesByPlaylist[p.id], now) !== "concluida")
+      .sort((a, b) => {
+        const sa = getScheduleStatus(schedulesByPlaylist[a.id], now);
+        const sb = getScheduleStatus(schedulesByPlaylist[b.id], now);
+        return STATUS_ORDER[sa] - STATUS_ORDER[sb];
+      });
+  }, [playlists, schedulesByPlaylist, now]);
+
+  // P4-fix + P5-fix: scheduledSpots ordenado e sem concluídas
+  const scheduledSpotsOrdered = useMemo(() => {
+    return [...scheduledSpots]
+      .filter((s) => getSpotStatus(s, now) !== "concluida")
+      .sort((a, b) => STATUS_ORDER[getSpotStatus(a, now)] - STATUS_ORDER[getSpotStatus(b, now)]);
+  }, [scheduledSpots, now]);
 
   const filteredPlaylists = useMemo(() => {
     if (!searchTerm.trim()) return playlists;
@@ -452,7 +467,7 @@ const ProgramacaoPanel = () => {
         {/* ─── TAB: Programações Ativas ─── */}
         <TabsContent value="active">
           <motion.div className="mt-4 space-y-3" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.22, ease: "easeOut" }}>
-          {scheduledPlaylists.length === 0 && scheduledSpots.length === 0 ? (
+          {scheduledPlaylists.length === 0 && scheduledSpotsOrdered.length === 0 ? (
             <div className="text-center py-10 space-y-2">
               <CalendarClock className="h-10 w-10 text-muted-foreground/30 mx-auto" />
               <p className="text-sm text-white/70">Nenhuma programação ativa ainda.</p>
@@ -508,10 +523,10 @@ const ProgramacaoPanel = () => {
               )}
 
               {/* ── Spots programados ── */}
-              {scheduledSpots.length > 0 && (
+              {scheduledSpotsOrdered.length > 0 && (
                 <div className="space-y-2">
                   <p className="text-[11px] font-semibold text-white/40 uppercase tracking-wider px-1">Spots</p>
-                  {scheduledSpots.map((spot) => {
+                  {scheduledSpotsOrdered.map((spot) => {
                     const status = getSpotStatus(spot, now);
                     const clientName = spot.userId ? (clientNames[spot.userId] ?? spot.userId?.slice(0, 8)) : null;
                     return (

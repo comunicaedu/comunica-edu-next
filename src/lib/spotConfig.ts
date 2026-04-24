@@ -111,6 +111,11 @@ export function removeSpotConfig(id: string): void {
   if (typeof window !== "undefined") window.dispatchEvent(new Event("spot-configs-changed"));
 }
 
+export function clearSpotConfigs(): void {
+  _configCache = null;
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("spot-configs-changed"));
+}
+
 // ── Weighted rotation builder ─────────────────────────────────────────────────
 
 /**

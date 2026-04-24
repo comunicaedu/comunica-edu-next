@@ -15,6 +15,7 @@
 
 import {
   loadSpotConfigs,
+  clearSpotConfigs,
   DEFAULT_SPOT_CONFIG,
   type SpotConfig,
   type SpotConfigMap,
@@ -113,6 +114,17 @@ export function invalidateSpotsCache(): void {
   _cache = null;
   _cacheTs = 0;
   if (typeof window !== "undefined") window.dispatchEvent(new Event("spots-updated"));
+}
+
+/** Zera TODOS os caches em memória (spots + configs). Uso: logout, troca de sessão, start/exit impersonation. */
+export function invalidateAllCaches(): void {
+  _cache = null;
+  _cacheTs = 0;
+  clearSpotConfigs();
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event("spots-updated"));
+    window.dispatchEvent(new Event("spot-configs-changed"));
+  }
 }
 
 // ── Verificação de agendamento ────────────────────────────────────────────────

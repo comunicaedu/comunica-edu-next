@@ -9,6 +9,13 @@ import { toast } from "sonner";
 import type { InsertMode } from "@/components/player/VoiceRecorderModal";
 import { authedFetch } from "@/lib/authedFetch";
 import { useSessionStore } from "@/stores/sessionStore";
+import { invalidateSpotsCache } from "@/lib/spotIntercalate";
+
+function notifyConfigChanged() {
+  window.dispatchEvent(new Event("spot-configs-changed"));
+  window.dispatchEvent(new Event("spots-changed"));
+  invalidateSpotsCache();
+}
 const VOICE_OPTIONS = [
   { id: "masculina-jovem", label: "Zeraías", desc: "Masculina" },
   { id: "feminina-jovem",  label: "Zeruia",  desc: "Feminina"  },
@@ -609,10 +616,10 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
     }
   }, [previewingVoice, previewCache, fetchPreviewUrl, previewTexts]);
 
-  // Persiste spot no banco (upload do blob + insert na tabela spots)
-  const persistSpot = async (blobUrl: string, title: string): Promise<string | null> => {
+  // Persiste spot no banco. Se replaceId for passado, SUBSTITUI o file_path do spot
+  // existente (sem criar novo registro) — usado pelo handleMix pra evitar duplicata.
+  const persistSpot = async (blobUrl: string, title: string, replaceId?: string | null): Promise<string | null> => {
     try {
-      // Se é blob: URL, converte para File. Se é direct:, extrai a URL real.
       const realUrl = blobUrl.startsWith("direct:") ? blobUrl.slice(7) : blobUrl;
       const res = await fetch(realUrl);
       const blob = await res.blob();
@@ -622,6 +629,7 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
       const form = new FormData();
       form.append("file", file);
       form.append("title", title || `Spot locutor ${new Date().toISOString().slice(0, 16).replace("T", " ")}`);
+      if (replaceId) form.append("replace_id", replaceId);
       const uploadRes = await authedFetch("/api/spots", { method: "POST", body: form });
       if (!uploadRes.ok) { console.error("[persistSpot] upload falhou:", await uploadRes.text().catch(() => "")); return null; }
       const { spot } = await uploadRes.json();
@@ -641,11 +649,14 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
     // Se programado e spot salvo com sucesso, cria spot_config com schedule
     if (scheduledAt && spotId) {
       const schedEnd = schedEndDate && schedEndTime ? `${schedEndDate}T${schedEndTime}` : null;
-      await authedFetch("/api/spots/configs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ spot_id: spotId, enabled: true, priority: 1, scheduleStart: scheduledAt, scheduleEnd: schedEnd }),
-      }).catch(() => {});
+      try {
+        const r = await authedFetch("/api/spots/configs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ spot_id: spotId, enabled: true, priority: 1, scheduleStart: scheduledAt, scheduleEnd: schedEnd }),
+        });
+        if (r.ok) notifyConfigChanged();
+      } catch { /* silent */ }
     }
 
     toast.success(scheduledAt ? `Narração agendada para ${scheduledAt}!` : "Narração inserida no player!");
@@ -816,11 +827,17 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
       setActiveOutput("spot");
       toast.success("Spot com trilha criado!");
 
-      // Persiste automaticamente no banco (spotId guardado para evitar duplicatas no insertMixed)
-      lastSpotIdRef.current = null;
+      // P1-fix: se já existe spot persistido pela geração (mp3), SUBSTITUI o arquivo
+      // pelo wav mixado em vez de criar um novo registro (evita duplicata narração+mix).
+      const existingSpotId = lastSpotIdRef.current;
       const name = spotName.trim() || text.slice(0, 28) + (text.length > 28 ? "…" : "");
-      persistSpot(url, name).then(id => {
-        if (id) { lastSpotIdRef.current = id; toast.success("Spot salvo no painel!"); window.dispatchEvent(new Event("spots-changed")); }
+      persistSpot(url, name, existingSpotId).then(id => {
+        if (id) {
+          lastSpotIdRef.current = id;
+          toast.success(existingSpotId ? "Spot atualizado no painel!" : "Spot salvo no painel!");
+          window.dispatchEvent(new Event("spots-changed"));
+          invalidateSpotsCache();
+        }
       });
     } catch (e) { console.error("[handleMix]", e); toast.error("Erro ao misturar áudio."); }
     finally { setIsMixing(false); }
@@ -849,11 +866,14 @@ const LocutorVirtualPanel = ({ onInsert, onPreviewStart, isLocked = false, isAdm
     const spotId = lastSpotIdRef.current;
 
     if (scheduledAt && spotId) {
-      await authedFetch("/api/spots/configs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ spot_id: spotId, enabled: true, priority: 1, scheduleStart: scheduledAt, scheduleEnd: null }),
-      }).catch(() => {});
+      try {
+        const r = await authedFetch("/api/spots/configs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ spot_id: spotId, enabled: true, priority: 1, scheduleStart: scheduledAt, scheduleEnd: null }),
+        });
+        if (r.ok) notifyConfigChanged();
+      } catch { /* silent */ }
     }
 
     const who = userName ? ` · ${userName}` : "";

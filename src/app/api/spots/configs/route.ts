@@ -27,6 +27,7 @@ export async function GET(req: NextRequest) {
       scheduleEnd: row.schedule_end ?? null,
       interval: row.interval_songs != null ? Number(row.interval_songs) : null,
       scheduledAt: null,
+      user_id: row.user_id,
     };
   }
 
