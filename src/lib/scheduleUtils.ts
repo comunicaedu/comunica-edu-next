@@ -48,6 +48,11 @@ export const isScheduleActiveAt = (schedule: ScheduleWindow, now: Date): boolean
   const isActive = schedule.is_active ?? schedule.active ?? true;
   if (!isActive || !schedule.days_of_week?.length) return false;
 
+  // Banco grava days_of_week como text[] (ex.: ["0","1",...]) e Date.getDay() retorna number.
+  // Array.includes com tipos diferentes sempre retorna false. Normaliza pra Number.
+  const todayNum = now.getDay();
+  const allowedDays = (schedule.days_of_week ?? []).map((d) => Number(d));
+
   // Check date range if start_date/end_date are set
   if (schedule.start_date || schedule.end_date) {
     const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -61,15 +66,14 @@ export const isScheduleActiveAt = (schedule: ScheduleWindow, now: Date): boolean
   if (startMinutes === null || endMinutes === null || startMinutes === endMinutes) return false;
 
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
-  const today = now.getDay();
 
   if (startMinutes < endMinutes) {
-    return schedule.days_of_week.includes(today) && currentMinutes >= startMinutes && currentMinutes < endMinutes;
+    return allowedDays.includes(todayNum) && currentMinutes >= startMinutes && currentMinutes < endMinutes;
   }
 
-  const yesterday = (today + 6) % 7;
-  const inLateWindow = schedule.days_of_week.includes(today) && currentMinutes >= startMinutes;
-  const inAfterMidnightWindow = schedule.days_of_week.includes(yesterday) && currentMinutes < endMinutes;
+  const yesterday = (todayNum + 6) % 7;
+  const inLateWindow = allowedDays.includes(todayNum) && currentMinutes >= startMinutes;
+  const inAfterMidnightWindow = allowedDays.includes(yesterday) && currentMinutes < endMinutes;
 
   return inLateWindow || inAfterMidnightWindow;
 };
@@ -80,19 +84,21 @@ const getStartAnchor = (schedule: ScheduleWindow, now: Date): number => {
 
   if (startMinutes === null || endMinutes === null) return -Infinity;
 
+  const todayNum = now.getDay();
+  const allowedDays = (schedule.days_of_week ?? []).map((d) => Number(d));
+
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
-  const today = now.getDay();
-  const yesterday = (today + 6) % 7;
+  const yesterday = (todayNum + 6) % 7;
 
   if (startMinutes < endMinutes) {
     return startMinutes;
   }
 
-  if (currentMinutes >= startMinutes && schedule.days_of_week.includes(today)) {
+  if (currentMinutes >= startMinutes && allowedDays.includes(todayNum)) {
     return startMinutes;
   }
 
-  if (currentMinutes < endMinutes && schedule.days_of_week.includes(yesterday)) {
+  if (currentMinutes < endMinutes && allowedDays.includes(yesterday)) {
     return startMinutes - MINUTES_IN_DAY;
   }
 
