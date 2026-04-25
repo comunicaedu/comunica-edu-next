@@ -1804,6 +1804,11 @@ function PlayerPageContent() {
     onScheduleEnd: handleScheduleEnd,
     onBeforePlayVolume: undefined,
     onScheduleTransition: handleScheduleTransition,
+    onVolumeRestore: (targetVolume, fadeDurationMs) => {
+      fadeVolume(musicVolumeRef.current, targetVolume, fadeDurationMs, () => {
+        applyPlayerVolume(targetVolume, { rememberAsPrevious: false });
+      });
+    },
     isManuallyPaused: () => manuallyPausedRef.current,
   });
 
