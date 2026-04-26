@@ -51,3 +51,36 @@ Commit de referencia: HEAD atual (v-fundacao-jwt)
 ## Se QUALQUER item falhar em um commit:
    git reset --hard HEAD~1
    Investigar antes de prosseguir.
+
+---
+
+## Sistema de duration (Fase 1 e 2 - fechado em 26/04/2026)
+
+Arquivos PROTEGIDOS - mudancas requerem teste integral:
+- src/app/api/songs/route.ts (multipart com duration)
+- src/app/api/songs/[id]/route.ts (PATCH para lazy-fill)
+- src/app/api/spots/route.ts (multipart com duration)
+- src/app/api/import-playlist/route.ts (filtro 270s)
+- src/app/api/admin/sync-playlists/route.ts (filtro 270s)
+- src/app/api/admin/clean-pending/route.ts (MAX 270)
+- src/app/api/admin/clean-youtube/route.ts (MAX 270)
+- src/components/player/LocutorVirtualPanel.tsx (envia duration)
+- src/components/player/CompactLocutorVirtual.tsx (envia duration)
+- src/components/player/SpotsPanel.tsx (envia duration)
+- src/components/player/PlaylistSection.tsx (tipo tracks com duration)
+- src/app/player/page.tsx (lazy-fill onLoadedData + pendingScheduleRef)
+
+Schema do banco PROTEGIDO:
+- songs.duration (INT) - tempo em segundos
+- spots.duration (INT) - tempo em segundos
+- Limite YouTube: <= 270 segundos (4:30)
+
+Tag de fechamento: v-duration-fechada
+Rollback emergencial: git reset --hard v-duration-fechada
+
+Em caso de regressao desta area:
+1. NAO commitar mudancas que quebrem essas validacoes
+2. Rodar checks:
+   - songs YouTube > 270s (deve ser 0)
+   - playlist_songs orfaos (deve ser 0)
+   - npm run build (deve passar)
