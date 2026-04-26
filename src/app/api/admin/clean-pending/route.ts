@@ -8,8 +8,8 @@ const supabase = createClient(
 );
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
-const MIN_DURATION_S  = 60;
-const MAX_DURATION_S  = 480;
+const MIN_DURATION_S  = 0;
+const MAX_DURATION_S  = 270;
 
 // ── Cooldown no servidor ──────────────────────────────────────────────────────
 // Impede que múltiplos usuários/abas disparem a limpeza ao mesmo tempo.

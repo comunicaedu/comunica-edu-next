@@ -283,16 +283,16 @@ export async function GET(request: Request) {
         const videoId = item.contentDetails?.videoId ?? item.snippet?.resourceId?.videoId;
         const duration = durationMap[videoId] ?? 0;
         const category = categoryMap[videoId] ?? "";
-        // Filtrar: só música (categoria 10), duração entre 90s e 720s
+        // Filtrar: só música (categoria 10), duração até 270s (4:30)
         // categoria vazia = aceitar (pode ser playlist privada sem acesso total)
-        if (duration > 0 && (duration < 90 || duration > 720)) return null;
+        if (duration > 0 && duration > 270) return null;
         if (category && category !== "10") return null;
         return {
           title: truncateName(item.snippet?.title ?? "Sem título", 80),
           artist: item.snippet?.videoOwnerChannelTitle ?? item.snippet?.channelTitle ?? "",
           cover_url: item.snippet?.thumbnails?.medium?.url ?? item.snippet?.thumbnails?.default?.url ?? null,
           youtube_video_id: videoId ?? null,
-          duration_seconds: duration || null,
+          duration: duration || null,
         };
       })
       .filter(Boolean)
@@ -421,6 +421,7 @@ export async function POST(request: NextRequest) {
         file_path: filePath,
         cover_url: track.cover_url ?? null,
         youtube_video_id: track.youtube_video_id ?? null,
+        duration: track.duration ?? null,
       }),
     });
     const songData = await songRes.json();

@@ -8,8 +8,8 @@ const supabase = createClient(
 );
 
 const YOUTUBE_API_KEY  = process.env.YOUTUBE_API_KEY;
-const MIN_DURATION_S   = 60;
-const MAX_DURATION_S   = 480; // 8 min — cobre a maioria das músicas normais
+const MIN_DURATION_S   = 0;
+const MAX_DURATION_S   = 270; // 4:30 — limite máximo de duração para músicas YouTube
 
 const TITLE_BLACKLIST = [
   "hora", "horas", "hour", "hours",

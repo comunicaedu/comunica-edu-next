@@ -82,6 +82,7 @@ interface Song {
   cover_url: string | null;
   created_at: string;
   youtube_video_id?: string | null;
+  duration?: number | null;
 }
 
 interface AvatarCoverStyle {
@@ -381,6 +382,23 @@ function PlayerPageContent() {
   const queueRef = useRef<{ queue: Song[]; queueIndex: number; activePlaylistId: string | null }>({ queue: [], queueIndex: 0, activePlaylistId: null });
   const { claimAudioFocus, releaseAudioFocus } = useAudioFocus();
   const ytPlayer = useYouTubePlayer();
+
+  // Lazy-fill de duration para YouTube: quando ytPlayer.duration aparece, dispara update.
+  const ytDurationFilledRef = useRef<string | null>(null);
+  useEffect(() => {
+    const song = currentSongRef.current;
+    const dur = ytPlayer.duration;
+    if (!song?.id) return;
+    if (song.duration && song.duration > 0) return;
+    if (!Number.isFinite(dur) || dur <= 0) return;
+    if (ytDurationFilledRef.current === song.id) return;
+    ytDurationFilledRef.current = song.id;
+    authedFetch(`/api/songs/${song.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ duration: Math.round(dur) }),
+    }).catch(() => {});
+  }, [ytPlayer.duration]);
   const {
     playByVideoId: playYouTubeByVideoId,
     loadNext: loadYouTubeNext,
@@ -1301,6 +1319,7 @@ function PlayerPageContent() {
     // Always pause immediately — no fade, no delay.
     // Fades only happen during schedule transitions (handleScheduleTransition).
     manuallyPausedRef.current = true;
+    pendingScheduleRef.current = null;
     if (scheduledVolumeFadeRef.current !== null) {
       window.clearInterval(scheduledVolumeFadeRef.current);
       scheduledVolumeFadeRef.current = null;
@@ -1663,10 +1682,32 @@ function PlayerPageContent() {
     song: Song,
     targetVolume: number,
     releaseAfterFade = false,
+    force = false,
   ) => {
     // Don't start a new transition if already transitioning or user paused manually
     if (isTransitioningRef.current) return;
     if (manuallyPausedRef.current) return;
+
+    // Regra: nunca cortar música em andamento. Se há reprodução ativa, arma
+    // pendingScheduleRef para consumir no fim natural via onEnded.
+    // force=true bypassa essa espera (usado pelo retorno em handleScheduleEnd).
+    if (!force && audioRef.current && !isYouTubeModeRef.current) {
+      const audio = audioRef.current;
+      if (audio.duration && !isNaN(audio.duration) && audio.duration > 0) {
+        const remaining = audio.duration - audio.currentTime;
+        const THRESHOLD = 60; // segundos
+        if (remaining > 0 && remaining > THRESHOLD) {
+          // Musica atual eh longa demais. Sistema espera item natural ainda assim.
+          pendingScheduleRef.current = { song, targetVolume, releaseAfterFade };
+          return;
+        }
+        if (remaining > 0 && remaining <= THRESHOLD) {
+          // Esperar musica atual terminar naturalmente
+          pendingScheduleRef.current = { song, targetVolume, releaseAfterFade };
+          return;
+        }
+      }
+    }
 
     isTransitioningRef.current = true;
 
@@ -1731,6 +1772,14 @@ function PlayerPageContent() {
     playlistId: string | null;
   } | null>(null);
 
+  // Schedule pendente — quando schedule dispara mas há música em andamento.
+  // É consumido em onEnded no fim natural da música, sem cortar a reprodução.
+  const pendingScheduleRef = useRef<{
+    song: Song;
+    targetVolume: number;
+    releaseAfterFade: boolean;
+  } | null>(null);
+
   const handleQueueChangeForSchedule = useCallback((songs: Song[], currentIndex: number, playlistId: string) => {
     // Save current state before the schedule takes over (only if not already interrupted)
     if (!interruptedStateRef.current) {
@@ -1782,7 +1831,7 @@ function PlayerPageContent() {
         queueIndex: interrupted.queueIndex,
         activePlaylistId: interrupted.playlistId,
       };
-      handleScheduleTransition(interrupted.song, restoredVol, true);
+      handleScheduleTransition(interrupted.song, restoredVol, true, true);
     } else {
       // No interrupted state — fade to restored volume then release lock
       scheduledVolumeLockRef.current = false;
@@ -1827,6 +1876,26 @@ function PlayerPageContent() {
     rafId = requestAnimationFrame(tick);
 
     const onEnded = () => {
+      // Consumir schedule pendente no fim natural da música — sem cortar reprodução.
+      if (pendingScheduleRef.current) {
+        const pending = pendingScheduleRef.current;
+        pendingScheduleRef.current = null;
+        if (scheduledVolumeFadeRef.current !== null) {
+          window.clearInterval(scheduledVolumeFadeRef.current);
+          scheduledVolumeFadeRef.current = null;
+        }
+        musicVolumeRef.current = pending.targetVolume;
+        applyPlayerVolume(pending.targetVolume, { rememberAsPrevious: false });
+        const isImported = pending.song.file_path?.startsWith("imported/") || pending.song.file_path?.startsWith("youtube:");
+        if (isImported) handlePlayImported(pending.song);
+        else handlePlayCascade(pending.song);
+        if (pending.releaseAfterFade) {
+          scheduledVolumeLockRef.current = false;
+          scheduledVolumeTargetRef.current = null;
+        }
+        return; // schedule assumiu — não avançar queue
+      }
+
       if (isYouTubeModeRef.current) return;
       let nextUrl = nextSongUrlRef.current;
       // Fallback: resolve URL sincronamente se não foi pre-carregada
@@ -1938,6 +2007,18 @@ function PlayerPageContent() {
     const onLoadedData = () => {
       applyPersistedVolume();
       forceLocalNormalizerSync();
+      // Lazy-fill: se a música atual não tem duration no banco e o <audio> já sabe,
+      // dispara update silencioso (servidor decide se preenche ou deleta se YouTube > 270s).
+      const song = currentSongRef.current;
+      const dur = audioRef.current?.duration;
+      if (song?.id && (!song.duration || song.duration <= 0) && Number.isFinite(dur) && dur && dur > 0) {
+        const seconds = Math.round(dur);
+        authedFetch(`/api/songs/${song.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ duration: seconds }),
+        }).catch(() => {});
+      }
     };
 
     let errorHandled = false;
@@ -1974,6 +2055,7 @@ function PlayerPageContent() {
       audio.removeEventListener("play", onPlay);
       audio.removeEventListener("pause", onPause);
       audio.removeEventListener("error", onError);
+      pendingScheduleRef.current = null;
     };
   }, [clampVolume, forceLocalNormalizerSync, getPersistedMusicVolume, setNormalizerVolume, setYouTubeVolume]);
 

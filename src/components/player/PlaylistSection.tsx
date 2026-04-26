@@ -114,7 +114,7 @@ interface PreviewData {
   cover_url: string | null;
   tracks_count: number;
   source: string;
-  tracks: { title: string; artist: string; cover_url: string | null; youtube_video_id: string | null }[];
+  tracks: { title: string; artist: string; cover_url: string | null; youtube_video_id: string | null; duration?: number | null }[];
 }
 interface YTSearchResult {
   id: string;

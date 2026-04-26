@@ -68,6 +68,10 @@ export async function POST(req: NextRequest) {
   const file = formData.get("file") as File | null;
   const title = (formData.get("title") as string | null) ?? "";
   const replaceId = (formData.get("replace_id") as string | null) ?? null;
+  const durationRaw = formData.get("duration");
+  const duration = durationRaw != null && durationRaw !== ""
+    ? Number.parseInt(String(durationRaw), 10)
+    : null;
 
   if (!file) return NextResponse.json({ error: "Arquivo não enviado" }, { status: 400 });
 
@@ -93,6 +97,7 @@ export async function POST(req: NextRequest) {
     // Mantém o `type` original do registro — a constraint do banco não aceita "wav"
     const updatePatch: Record<string, unknown> = { file_path: storagePath };
     if (title) updatePatch.title = title;
+    if (duration && Number.isFinite(duration) && duration > 0) updatePatch.duration = duration;
 
     const { data, error: dbError } = await ctx.db
       .from("spots").update(updatePatch).eq("id", replaceId).select().single();
@@ -113,14 +118,17 @@ export async function POST(req: NextRequest) {
 
   if (uploadError) return NextResponse.json({ error: uploadError.message }, { status: 500 });
 
+  const insertRow: Record<string, unknown> = {
+    user_id: ctx.userId,
+    title: title || file.name.replace(/\.[^.]+$/, ""),
+    file_path: storagePath,
+    type: spotType,
+  };
+  if (duration && Number.isFinite(duration) && duration > 0) insertRow.duration = duration;
+
   const { data, error: dbError } = await ctx.db
     .from("spots")
-    .insert({
-      user_id: ctx.userId,
-      title: title || file.name.replace(/\.[^.]+$/, ""),
-      file_path: storagePath,
-      type: spotType,
-    })
+    .insert(insertRow)
     .select()
     .single();
 

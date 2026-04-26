@@ -124,13 +124,13 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // IDs válidos (duração entre 60s e 720s)
+    // IDs válidos (duração até 270s = 4:30)
     const validYtIds = new Set(
       trustedItems
         .map((i: any) => i.contentDetails?.videoId ?? i.snippet?.resourceId?.videoId)
         .filter((id: string) => {
           const dur = durationMap[id] ?? 0;
-          return dur >= 60 && dur <= 720;
+          return dur > 0 && dur <= 270;
         })
     );
 

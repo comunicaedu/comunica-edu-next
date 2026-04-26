@@ -90,6 +90,10 @@ export async function POST(req: NextRequest) {
       const file     = formData.get("file") as File | null;
       const title    = formData.get("title") as string | null;
       const genre    = formData.get("genre") as string | null;
+      const durationRaw = formData.get("duration");
+      const duration = durationRaw != null && durationRaw !== ""
+        ? Number.parseInt(String(durationRaw), 10)
+        : null;
 
       if (!file) return NextResponse.json({ error: "Arquivo não enviado" }, { status: 400 });
 
@@ -125,6 +129,7 @@ export async function POST(req: NextRequest) {
         genre:     genre || null,
         uploaded_by: user.userId,
       };
+      if (duration && Number.isFinite(duration) && duration > 0) row.duration = duration;
 
       const { data, error } = await supabase.from("songs").insert(row).select().single();
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });

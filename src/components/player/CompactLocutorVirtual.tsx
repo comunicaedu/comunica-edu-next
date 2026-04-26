@@ -7,6 +7,21 @@ import { toast } from "sonner";
 import { authedFetch } from "@/lib/authedFetch";
 import { useSessionStore } from "@/stores/sessionStore";
 import { invalidateSpotsCache } from "@/lib/spotIntercalate";
+
+async function readAudioDuration(blob: Blob): Promise<number> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const a = new Audio(url);
+    const cleanup = () => { try { URL.revokeObjectURL(url); } catch {} };
+    a.addEventListener("loadedmetadata", () => {
+      const d = a.duration;
+      cleanup();
+      resolve(Number.isFinite(d) && d > 0 ? Math.round(d) : 0);
+    }, { once: true });
+    a.addEventListener("error", () => { cleanup(); resolve(0); }, { once: true });
+    setTimeout(() => { cleanup(); resolve(0); }, 5000);
+  });
+}
 import type { InsertMode } from "@/components/player/VoiceRecorderModal";
 
 const VOICES = [
@@ -223,9 +238,11 @@ const CompactLocutorVirtual = ({ open, onClose, onInsert, onPreviewStart, isLock
       if (blob.size === 0) return null;
       const ext = blob.type.includes("wav") ? "wav" : "mp3";
       const file = new File([blob], `locutor-${Date.now()}.${ext}`, { type: blob.type || "audio/mpeg" });
+      const duration = await readAudioDuration(blob);
       const form = new FormData();
       form.append("file", file);
       form.append("title", title || `Spot locutor ${new Date().toISOString().slice(0, 16).replace("T", " ")}`);
+      if (duration > 0) form.append("duration", String(duration));
       const uploadRes = await authedFetch("/api/spots", { method: "POST", body: form });
       if (!uploadRes.ok) return null;
       const { spot } = await uploadRes.json();

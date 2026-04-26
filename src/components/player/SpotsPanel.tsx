@@ -628,13 +628,28 @@ const SpotsPanel = ({ userId: propUserId, isAdmin = false, isLocked = false, isU
     setUploadProgress({ done: 0, total: valid.length });
     let ok = 0, fail = 0;
 
+    const readDuration = async (f: File): Promise<number> => new Promise((resolve) => {
+      const url = URL.createObjectURL(f);
+      const a = new Audio(url);
+      const cleanup = () => { try { URL.revokeObjectURL(url); } catch {} };
+      a.addEventListener("loadedmetadata", () => {
+        const d = a.duration;
+        cleanup();
+        resolve(Number.isFinite(d) && d > 0 ? Math.round(d) : 0);
+      }, { once: true });
+      a.addEventListener("error", () => { cleanup(); resolve(0); }, { once: true });
+      setTimeout(() => { cleanup(); resolve(0); }, 5000);
+    });
+
     for (let i = 0; i < valid.length; i++) {
       const file = valid[i];
       try {
         const title = file.name.replace(/\.[^.]+$/, "");
+        const duration = await readDuration(file);
         const form = new FormData();
         form.append("file", file);
         form.append("title", title);
+        if (duration > 0) form.append("duration", String(duration));
         const res = await fetch("/api/spots", {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
