@@ -47,6 +47,7 @@ import {
   invalidateAllCaches,
 } from "@/lib/spotIntercalate";
 import { loadSpotConfigs, fetchSpotConfigs, setCachedSpotConfigs } from "@/lib/spotConfig";
+import { calculateQueueETA, findInsertionPoint, rebuildQueueForSchedule } from "@/lib/queueETA";
 import VoiceRecorderModal, { type InsertMode } from "@/components/player/VoiceRecorderModal";
 import { useKeyboardPlayer } from "@/hooks/useKeyboardPlayer";
 import { usePlayerBroadcaster, type RemoteCommand } from "@/hooks/usePlayerBroadcast";
@@ -1845,6 +1846,41 @@ function PlayerPageContent() {
     }
   }, [applyPlayerVolume, fadeVolume, getPersistedMusicVolume, handleScheduleTransition]);
 
+  // Schedule approaching: 5min antes do start, reembaralha musicas restantes pra
+  // que o ponto de transicao caia naturalmente na janela ±60s do horario programado.
+  const handleScheduleApproaching = useCallback((targetTime: number, _playlistId: string) => {
+    const audio = audioRef.current;
+    const audioCurrent = audio?.currentTime ?? 0;
+    const currentQueue = queueRef.current.queue as unknown as Parameters<typeof calculateQueueETA>[0];
+    if (!currentQueue || currentQueue.length === 0) return;
+
+    const configs = loadSpotConfigs();
+    const spotCfg = getSpotSettings();
+    const spotInterval = spotCfg.enabled && spotCfg.interval > 0 ? spotCfg.interval : 0;
+    const spotsPool = getCachedSpots() as unknown as Parameters<typeof calculateQueueETA>[2];
+
+    // 1. Calcular timeline atual
+    const timeline = calculateQueueETA(currentQueue, audioCurrent, spotsPool, configs, spotInterval);
+
+    // 2. Existe ponto natural na janela ±1 min?
+    const insertionPoint = findInsertionPoint(timeline, targetTime, 60_000);
+    if (insertionPoint !== null) return; // ja tem ponto natural — não reembaralha
+
+    // 3. Reembaralhar fila — pode retornar null se nenhuma combinação caiba em ±60s
+    const newQueue = rebuildQueueForSchedule(
+      currentQueue, audioCurrent, spotsPool, configs, spotInterval, targetTime, 60_000
+    );
+
+    if (newQueue === null) {
+      console.warn("[Schedule] Nao foi possivel reembaralhar pra cair em ±1min. Schedule pode atrasar/adiantar.");
+      return; // mantém fila atual; schedule cai onde der
+    }
+
+    // 4. Aplicar nova queue (mantém o item atual em curso)
+    setQueue(newQueue as unknown as Song[]);
+    queueRef.current = { ...queueRef.current, queue: newQueue as unknown as Song[] };
+  }, [setQueue]);
+
   usePlaylistScheduleAutomation({
     onPlay: handlePlayWithNotify,
     onPause: handlePause,
@@ -1859,6 +1895,7 @@ function PlayerPageContent() {
       });
     },
     isManuallyPaused: () => manuallyPausedRef.current,
+    onScheduleApproaching: handleScheduleApproaching,
   });
 
   // Progress tracking + auto-next on ended + force volume on every load

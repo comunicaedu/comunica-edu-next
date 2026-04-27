@@ -27,6 +27,9 @@ interface UsePlaylistScheduleAutomationParams {
   onScheduleTransition?: (song: PlaybackSong, targetVolume: number) => void;
   /** Returns true when the user has manually paused — automation must not restart playback */
   isManuallyPaused?: () => boolean;
+  /** Disparado quando faltam < 5 min para um schedule iniciar.
+   *  Permite ao player reembaralhar a fila pra cair na janela ±1 min do target. */
+  onScheduleApproaching?: (targetTime: number, playlistId: string) => void;
 }
 
 export const usePlaylistScheduleAutomation = ({
@@ -39,6 +42,7 @@ export const usePlaylistScheduleAutomation = ({
   onScheduleEnd,
   onScheduleTransition,
   isManuallyPaused,
+  onScheduleApproaching,
 }: UsePlaylistScheduleAutomationParams) => {
   const onPlayRef = useRef(onPlay);
   const onPauseRef = useRef(onPause);
@@ -49,6 +53,8 @@ export const usePlaylistScheduleAutomation = ({
   const onScheduleEndRef = useRef(onScheduleEnd);
   const onScheduleTransitionRef = useRef(onScheduleTransition);
   const isManuallyPausedRef = useRef(isManuallyPaused);
+  const onScheduleApproachingRef = useRef(onScheduleApproaching);
+  const approachingNotifiedRef = useRef<Set<string>>(new Set());
 
   const managedPlaylistIdRef = useRef<string | null>(null);
   const lastAppliedVolumeRef = useRef<number | null>(null);
@@ -63,6 +69,7 @@ export const usePlaylistScheduleAutomation = ({
   useEffect(() => { onScheduleEndRef.current = onScheduleEnd; }, [onScheduleEnd]);
   useEffect(() => { onScheduleTransitionRef.current = onScheduleTransition; }, [onScheduleTransition]);
   useEffect(() => { isManuallyPausedRef.current = isManuallyPaused; }, [isManuallyPaused]);
+  useEffect(() => { onScheduleApproachingRef.current = onScheduleApproaching; }, [onScheduleApproaching]);
 
   useEffect(() => {
     let cancelled = false;
@@ -179,6 +186,32 @@ export const usePlaylistScheduleAutomation = ({
         });
 
         cachedSchedules = Array.from(dedupedByPlaylist.values());
+
+        // Notifica approaching quando faltam <= 5 min para o próximo start.
+        // Idempotente: cada (schedule_id + start_time + dia) é notificado só uma vez.
+        if (onScheduleApproachingRef.current) {
+          const now = getReferenceNow();
+          const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+          const nowMs = now.getTime();
+          const APPROACHING_WINDOW_MS = 5 * 60 * 1000;
+          const today = now.getDay();
+          for (const s of cachedSchedules) {
+            if (!(s.is_active ?? s.active ?? true)) continue;
+            const allowedDays = (s.days_of_week ?? []).map((d) => Number(d));
+            if (!allowedDays.includes(today)) continue;
+            const [sH, sM] = s.start_time.split(":").map(Number);
+            if (!Number.isFinite(sH) || !Number.isFinite(sM)) continue;
+            const startMs = todayStart + (sH * 60 + sM) * 60_000;
+            const ms = startMs - nowMs;
+            if (ms > 0 && ms <= APPROACHING_WINDOW_MS) {
+              const key = `${s.id}_${s.start_time}_${now.toDateString()}`;
+              if (!approachingNotifiedRef.current.has(key)) {
+                approachingNotifiedRef.current.add(key);
+                onScheduleApproachingRef.current(startMs, s.playlist_id);
+              }
+            }
+          }
+        }
 
         const activeSchedule = getCurrentActiveSchedule(cachedSchedules, getReferenceNow());
 
