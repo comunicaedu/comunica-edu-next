@@ -84,3 +84,30 @@ Em caso de regressao desta area:
    - songs YouTube > 270s (deve ser 0)
    - playlist_songs orfaos (deve ser 0)
    - npm run build (deve passar)
+
+---
+
+## Fila inteligente baseada em duration (Fase 3 - fechado em 27/04/2026)
+
+Arquivos PROTEGIDOS:
+- src/lib/queueETA.ts (calculateQueueETA, findInsertionPoint, rebuildQueueForSchedule)
+- src/hooks/usePlaylistScheduleAutomation.ts (callback onScheduleApproaching, idempotencia via Set)
+- src/app/player/page.tsx (handleScheduleApproaching wirado)
+
+Algoritmo:
+- 5 min antes do schedule, sistema verifica ponto natural na janela ±1 min
+- Se nao existir, tenta 4 estrategias de rebuild:
+  1. Greedy ordenando por duracao crescente
+  2. Greedy ordenando por duracao decrescente
+  3. 200 random shuffles
+  4. Subset-sum exaustivo (so se restMusic <= 15)
+- Se NENHUMA estrategia cabe em ±60s, retorna null e fila NAO muda
+- Caller em page.tsx loga warn e mantem fila original
+
+Garantias:
+- Janela rigida de ±1 min (60_000ms) - nao negociavel
+- Spots intercalados contam no calculo (mantem regra "spot a cada N musicas")
+- Musicas sem duration usam fallback de 180s
+
+Tag de fechamento: v-fila-inteligente-fechada
+Rollback emergencial: git reset --hard v-fila-inteligente-fechada
